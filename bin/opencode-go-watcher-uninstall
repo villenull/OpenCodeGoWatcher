@@ -1,0 +1,66 @@
+#!/bin/bash
+# omarchy:summary=Remove the OpenCode Go record and cache left by the watcher
+# omarchy:hidden=true
+# `omarchy plugin remove` deletes the checkout and the shell.json entry, but it
+# cannot know that this plugin published a record into a directory the stock
+# agents panel treats as its own. The record outlives the plugin, and the panel
+# keeps drawing it — frozen at whatever it said when the service last ran.
+#
+# Run this BEFORE `omarchy plugin remove`, because the plugin's own copy of this
+# script goes away with the checkout.
+
+set -euo pipefail
+
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+USAGE_DIR="$STATE_HOME/omarchy/agents/usage"
+RECORD="$USAGE_DIR/opencode-go.json"
+CACHE_GLOB="$CACHE_HOME/omarchy/agent-usage/opencode-go-"
+
+removed=0
+
+if [[ -f $RECORD ]]; then
+  rm -v "$RECORD"
+  removed=1
+fi
+
+# The scan cache and the stale-limits cache both carry this agent's prefix.
+shopt -s nullglob
+stale=("$CACHE_HOME"/omarchy/agent-usage/opencode-go-*)
+shopt -u nullglob
+if (( ${#stale[@]} > 0 )); then
+  rm -v -- "${stale[@]}"
+  removed=1
+fi
+
+if (( removed == 0 )); then
+  echo "opencode-go-watcher-uninstall: nothing of the watcher's was left behind"
+else
+  echo "removed the watcher's record and cache; the tab is gone from the panel"
+fi
+
+# Anything else this plugin owns, and what to do about it.
+extra=(
+  "$HOME/.config/opencode-go-watcher/settings.json"
+  "$HOME/.config/opencode-go-watcher/settings.json.bak-ffa"
+)
+kept=()
+for path in "${extra[@]}"; do
+  [[ -e $path ]] && kept+=("$path")
+done
+
+if (( ${#kept[@]} > 0 )); then
+  echo
+  echo "left in place, because they are yours and not recreated:"
+  printf '  %s\n' "${kept[@]}"
+  echo "delete them by hand if you want the configuration gone too"
+fi
+
+cat <<'NEXT'
+
+Now drop the plugin itself:
+
+  omarchy plugin remove io.github.villenull.opencode-go-watcher
+
+Run this script first: once the checkout is gone, so is this script.
+NEXT

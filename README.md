@@ -69,6 +69,36 @@ cp ~/.config/omarchy/plugins/villenull.agents/assets/opencode-go{,-light}.svg \
 Undo it with `omarchy plugin remove villenull.agents`, which puts
 `omarchy.agents` back in the bar; the OpenCode Go tab survives either way.
 
+## Uninstall
+
+Two steps, in this order:
+
+```bash
+~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/opencode-go-watcher-uninstall
+omarchy plugin remove io.github.villenull.opencode-go-watcher
+```
+
+The first command is not optional bookkeeping. This plugin publishes a record
+into `~/.local/state/omarchy/agents/usage/`, which the stock panel treats as its
+own — it `find`s every `*.json` there and draws whatever it finds, with no
+record of who wrote it. `omarchy plugin remove` deletes the checkout and the
+`shell.json` entry; it cannot know about that file. So removing the plugin on
+its own leaves the OpenCode Go tab in your bar **frozen** at whatever the
+service last wrote, surviving reboots, with nothing left to update it. The
+uninstall script removes the record and this agent's scan caches, and leaves the
+other agents' caches alone.
+
+It has to run first: once the checkout is gone, so is the script. If you already
+removed the plugin, the equivalent is one line:
+
+```bash
+rm -f ~/.local/state/omarchy/agents/usage/opencode-go.json \
+      ~/.cache/omarchy/agent-usage/opencode-go-*
+```
+
+Either way the panel drops the tab on its next rescan, or immediately with
+`omarchy-shell omarchy.agents refresh`.
+
 ## How it works
 
 `omarchy.agents` is strictly a display. It watches
