@@ -231,10 +231,45 @@ Two things it refuses to do:
 
 ```bash
 omarchy plugin add https://github.com/villenull/OpenCodeGoWatcher --enable
+~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/opencode-go-watcher-setup
 ```
 
-That is the entire install. `omarchy plugin update` keeps the checkout current,
-so there is a single copy on disk.
+`omarchy plugin update` keeps the checkout current, so there is a single copy on
+disk.
+
+The second command asks for your Artificial Analysis API key, with echo off,
+validates it against the real endpoint, and stores it at `0600` in
+`~/.config/opencode-go-watcher/settings.json`. Skip it and everything still
+works — the speed probe reads the opencode key you already have — but the
+intelligence chart stays empty and the speed chart has nothing to scale against.
+Get a key at <https://artificialanalysis.ai/data-api>; the free tier allows 100
+requests per 24 h.
+
+```
+$ bin/opencode-go-watcher-setup
+
+Artificial Analysis API key
+    Get one at https://artificialanalysis.ai/data-api — the free tier allows
+    100 requests per 24 h, and one snapshot build costs up to twelve.
+    Leave it empty to skip.
+
+  AA API key: ********************************
+
+  Checking…
+  ok  key accepted — valid, 214 models readable
+  ok  saved to /home/you/.config/opencode-go-watcher/settings.json (mode 0600)
+```
+
+Other verbs, all non-interactive:
+
+```bash
+.../bin/opencode-go-watcher-setup --status        # what is configured; changes nothing
+.../bin/opencode-go-watcher-setup --probe-speed    # measure speed now
+.../bin/opencode-go-watcher-setup --clear-aa-key   # forget the key
+```
+
+`--set-aa-key KEY` also exists, but it puts the key in your shell history, so
+prefer the prompt.
 
 For the free-model charts, add the one line of Hyprland config described under
 [*One line of Hyprland config*](#one-line-of-hyprland-config-and-why-the-plugin-cannot-do-it)
