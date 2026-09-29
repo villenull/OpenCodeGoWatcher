@@ -125,9 +125,11 @@ Item {
   readonly property int screenW: screenInfo ? screenInfo.width : 1920
   readonly property int screenH: screenInfo ? screenInfo.height : 1080
 
-  // Preferred content size, clamped to leave a visible border on any screen.
-  readonly property int boxW: Math.min(840, screenW - Style.space(80))
-  readonly property int boxH: Math.min(900, screenH - Style.space(80))
+  // Must agree with the `size` in the Hyprland window rule. The rule wins when
+  // it is present; these are the fallback for when it is not, and the clamp
+  // keeps the window inside a small screen.
+  readonly property int boxW: Math.min(900, screenW - Style.space(80))
+  readonly property int boxH: Math.min(960, screenH - Style.space(80))
   // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
   // centred windows are FloatingWindows: they are real toplevels, so Hyprland
   // makes one the active window and SUPER + W — which is
@@ -143,7 +145,9 @@ Item {
   FloatingWindow {
     id: window
     title: "OpenCode Go free models"
-    color: "transparent"
+    // popups.background, not background: the raw background token carries the
+    // theme's background alpha, and a panel drawn in it is see-through.
+    color: Color.popups.background
     implicitWidth: root.boxW
     implicitHeight: root.boxH
     minimumSize: Qt.size(root.boxW, root.boxH)
@@ -158,21 +162,12 @@ Item {
       onCloseRequested: root.requestClose()
     }
 
-    // The visible card. The window behind it is transparent and full-screen, so
-    // this is the only thing drawn.
-    Rectangle {
-      id: card
-      anchors.centerIn: parent
-      width: root.boxW
-      height: root.boxH
-      // popups.background, not background: the raw background token carries the
-      // theme's background alpha, and a panel drawn in it is see-through —
-      // whatever is behind the window shows through the charts.
-      color: Color.popups.background
-      radius: Style.cornerRadius
-      border.width: 1
-      border.color: Qt.alpha(Color.popups.border, 0.6)
-
+    // No inner card. There used to be a Rectangle inset inside a transparent
+    // window, which meant the window and the visible surface were two different
+    // rectangles: Hyprland draws the active border on the window, so the
+    // highlight came out 30px larger than the card on every side. The window's
+    // own colour is the surface instead, so border and content are the same
+    // rectangle by construction.
     FocusScope {
       anchors.fill: parent
       focus: true
@@ -436,7 +431,6 @@ Item {
           Item { width: 1; height: Style.space(20) }
         }
       }
-    }
     }
   }
 

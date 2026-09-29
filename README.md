@@ -129,7 +129,6 @@ o.window({ class = "^org\\.quickshell$", title = "^OpenCode Go free models$" }, 
   center = true,
   size = { 900, 960 },
   pin = true,
-  noanim = true,
   tag = "-default-opacity",
 })
 ```
@@ -146,15 +145,24 @@ Then reload Hyprland. Each option earns its place:
 |---|---|
 | `float` | the overlay behaviour — does not interact with the tiled windows |
 | `center` | open in the middle rather than wherever the compositor drops a new toplevel |
-| `size` | the window is a transparent surface with the card centred in it, so size it to leave a margin |
+| `size` | the window surface *is* the card, so this is the card's size; the QML falls back to the same numbers |
 | `pin` | without it the window opens on whichever workspace the shell process is on, which is not necessarily yours, and it looks like nothing happened |
 | `tag` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`; a chart is not a wallpaper, and at that alpha the window behind stays legible through the bars |
 
-Two traps worth knowing. The match is on the **class** when you pass a string,
-and the class here is `org.quickshell` — which is every Quickshell toplevel,
-including omarchy's own — so the table form matching `title` is required. And
-the rules are applied when a window is *mapped*, so a window already open keeps
-whatever it had: close it and summon it again to see a rule take effect.
+Three traps, all of which cost a round trip here.
+
+The match is on the **class** when you pass a string, and the class here is
+`org.quickshell` — which is every Quickshell toplevel including omarchy's own —
+so the table form matching `title` is required.
+
+Rules apply when a window is *mapped*, so a window already open keeps whatever it
+had. Close it and summon it again to see a rule take effect, or you will conclude
+the rule does nothing.
+
+And do not add an animation field. `no_anim` belongs to `hl.layer_rule`;
+`hl.window_rule` rejects it and takes the **whole config** down with
+`Your config has errors: … unknown field 'no_anim'`. Omarchy's window rules have
+no animation option at all.
 
 Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
 — you want `"floating":true` and `"pinned":true`.
