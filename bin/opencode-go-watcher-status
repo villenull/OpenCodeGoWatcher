@@ -1,0 +1,163 @@
+#!/usr/bin/python3
+# omarchy:summary=Show the current OpenCode Go usage and rate limits
+# omarchy:args=[--json] [--refresh]
+"""Report what the watcher last published, in a form meant for a terminal.
+
+Reads the record the panel is already drawing, so it never triggers a scan of
+its own: asking the panel's data a question should not cost a walk over a
+multi-gigabyte database. Pass --refresh to collect first, which is the only way
+to see a window that moved since the last publish.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+COLLECTOR = PLUGIN_DIR / "bin" / "opencode-go-watcher-usage"
+
+
+def usage_dir() -> Path:
+  return Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")) / "omarchy" / "agents" / "usage"
+
+
+def load_record(refresh: bool) -> dict | None:
+  if refresh:
+    try:
+      done = subprocess.run([str(COLLECTOR), "--limits-only"], capture_output=True, text=True, timeout=120)
+      if done.returncode == 0 and done.stdout.strip():
+        return json.loads(done.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+      print(f"opencode-go-watcher-status: refresh failed ({exc})", file=sys.stderr)
+
+  path = usage_dir() / "opencode-go.json"
+  try:
+    return json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return None
+
+
+def human_tokens(value: object) -> str:
+  try:
+    count = float(value or 0)
+  except (TypeError, ValueError):
+    return "0"
+  for unit in ("", "K", "M", "B", "T"):
+    if abs(count) < 1000:
+      return f"{count:.0f}{unit}" if unit else f"{count:.0f}"
+    count /= 1000
+  return f"{count:.1f}P"
+
+
+def until(resets_at: str) -> str:
+  text = str(resets_at or "").strip()
+  if not text:
+    return "no reset time"
+  try:
+    parsed = datetime.fromisoformat(text)
+  except ValueError:
+    return "no reset time"
+  delta = parsed - datetime.now(parsed.tzinfo)
+  seconds = int(delta.total_seconds())
+  if seconds <= 0:
+    return "resetting"
+  hours, remainder = divmod(seconds, 3600)
+  minutes = remainder // 60
+  if hours >= 24:
+    return f"resets in {hours // 24}d {hours % 24}h"
+  if hours:
+    return f"resets in {hours}h {minutes}m"
+  return f"resets in {minutes}m"
+
+
+def number(value: object) -> int:
+  try:
+    return int(value or 0)
+  except (TypeError, ValueError):
+    return 0
+
+
+def bucket_total(bucket: object) -> int:
+  if not isinstance(bucket, dict):
+    return 0
+  return sum(number(bucket.get(field)) for field in
+             ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+
+
+def render(record: dict) -> None:
+  print(f"{record.get('name') or 'OpenCode Go'} — {record.get('tierLabel') or 'Go'}")
+
+  status = str(record.get("usageStatusText") or "")
+  if status:
+    print(f"  {status}")
+
+  limits = record.get("limits") or []
+  if not limits:
+    print("  no rate-limit data")
+  for limit in limits:
+    try:
+      percent = max(0.0, min(1.0, float(limit.get("percent", 0))))
+    except (AttributeError, TypeError, ValueError):
+      percent = 0.0
+    filled = int(round(percent * 20))
+    meter = "#" * filled + "." * (20 - filled)
+    label = str(limit.get("label") or "window")
+    print(f"  {label:<18} {meter} {percent * 100:5.1f}%  {until(limit.get('resetsAt', ''))}")
+
+  print(
+    f"  today            {human_tokens(record.get('todayTotalTokens'))} tokens"
+    f"  ({number(record.get('todayPrompts'))} prompts, {number(record.get('todaySessions'))} sessions)"
+  )
+  print(
+    f"  all time         {human_tokens(sum(bucket_total(b) for b in (record.get('modelUsage') or {}).values()))} tokens"
+    f"  across {number(record.get('activeDays'))} active days"
+  )
+
+  models = record.get("modelUsage") or {}
+  for name, bucket in sorted(models.items(), key=lambda kv: -bucket_total(kv[1]))[:5]:
+    print(f"    {name:<28} {human_tokens(bucket_total(bucket))}")
+
+  help_text = str(record.get("authHelpText") or "")
+  if help_text:
+    print(f"  {help_text}")
+
+  updated = str(record.get("updatedAt") or "")
+  if updated:
+    try:
+      stamp = datetime.fromisoformat(updated)
+      age = int((datetime.now(stamp.tzinfo) - stamp).total_seconds())
+      print(f"  updated {age}s ago")
+    except ValueError:
+      pass
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Show the current OpenCode Go usage and rate limits")
+  parser.add_argument("--json", action="store_true", help="print the raw record instead of a summary")
+  parser.add_argument("--refresh", action="store_true", help="collect fresh data first")
+  args = parser.parse_args()
+
+  record = load_record(args.refresh)
+  if record is None:
+    if (usage_dir() / "opencode-go.json").exists():
+      print("the OpenCode Go record is unreadable; run opencode-go-watcher-publish --force", file=sys.stderr)
+    else:
+      print("no OpenCode Go record yet. Sign in to OpenCode Go, then run:", file=sys.stderr)
+      print(f"  {PLUGIN_DIR / 'bin' / 'opencode-go-watcher-publish'}", file=sys.stderr)
+    return 1
+
+  if args.json:
+    print(json.dumps(record, indent=2))
+  else:
+    render(record)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

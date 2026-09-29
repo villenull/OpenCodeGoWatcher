@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.villenull.opencode-go-watcher",
+  "name": "OpenCode Go Watcher",
+  "version": "1.0.0",
+  "author": "villenull",
+  "license": "MIT",
+  "homepage": "https://github.com/villenull/OpenCodeGoWatcher",
+  "description": "OpenCode Go token usage and rate limits as a tab in the stock omarchy.agents panel.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

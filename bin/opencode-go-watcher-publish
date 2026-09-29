@@ -1,0 +1,55 @@
+#!/bin/bash
+# omarchy:summary=Publish the OpenCode Go usage record for the agents panel
+# omarchy:args=[--force] [--limits-only]
+# omarchy:hidden=true
+# Run the OpenCode Go collector and place its record where the stock
+# omarchy.agents panel reads it.
+#
+# This indirection exists because omarchy-agent-usage-update only globs
+# "$OMARCHY_PATH"/bin/omarchy-agent-usage-*, and that directory belongs to the
+# omarchy package. A collector inside a plugin checkout is never picked up, so
+# a third-party provider has to publish its own record.
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+COLLECTOR="$PLUGIN_DIR/bin/opencode-go-watcher-usage"
+AGENT_ID="opencode-go"
+
+USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
+
+# Honour the panel's own per-agent switch: a provider disabled in the widget's
+# settings should not be republished behind the panel's back.
+if [[ -f $SHELL_CONFIG ]] && command -v jq >/dev/null 2>&1; then
+  enabled=$(jq -r --arg id "$AGENT_ID" '
+    [ .bar.layout | ..[] | objects | select(.id? == "omarchy.agents") | .providers[$id].enabled? ]
+    | map(select(. != null))
+    | if length == 0 then true else (all(. != false)) end
+  ' "$SHELL_CONFIG" 2>/dev/null || echo true)
+  if [[ $enabled == "false" ]]; then
+    echo "$AGENT_ID disabled in the agents widget settings; not publishing" >&2
+    exit 0
+  fi
+fi
+
+mkdir -p "$USAGE_DIR"
+
+record=$("$COLLECTOR" "$@") || {
+  echo "opencode-go-watcher-publish: collector failed" >&2
+  exit 1
+}
+
+if [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+  echo "opencode-go-watcher-publish: collector did not print valid JSON" >&2
+  exit 1
+fi
+
+# Atomic, so the panel never reads a half-written record: FileView reloads on
+# every change and JSON.parse on a truncated file would drop the tab entirely.
+tmp=$(mktemp "$USAGE_DIR/.$AGENT_ID.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$record" >"$tmp"
+chmod 600 "$tmp"
+mv "$tmp" "$USAGE_DIR/$AGENT_ID.json"
+trap - EXIT
