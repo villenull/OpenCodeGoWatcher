@@ -13,9 +13,11 @@ set -euo pipefail
 
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 USAGE_DIR="$STATE_HOME/omarchy/agents/usage"
 RECORD="$USAGE_DIR/opencode-go.json"
 CACHE_GLOB="$CACHE_HOME/omarchy/agent-usage/opencode-go-"
+CHARTS_DIR="$STATE_HOME/opencode-go-watcher/free-for-all"
 
 removed=0
 
@@ -24,7 +26,15 @@ if [[ -f $RECORD ]]; then
   removed=1
 fi
 
-# The scan cache and the stale-limits cache both carry this agent's prefix.
+# The scan cache, the stale-limits cache, and everything the free-model charts
+# accumulate: the snapshot, the speed probe, the Omniscience grades and run
+# state, and the cached question set. All of it is re-derivable, so it goes.
+if [[ -d $CHARTS_DIR ]]; then
+  rm -rv "$CHARTS_DIR"
+  removed=1
+fi
+
+# Leftovers from earlier releases, and any bare cache entries.
 shopt -s nullglob
 stale=("$CACHE_HOME"/omarchy/agent-usage/opencode-go-*)
 shopt -u nullglob
@@ -36,24 +46,16 @@ fi
 if (( removed == 0 )); then
   echo "opencode-go-watcher-uninstall: nothing of the watcher's was left behind"
 else
-  echo "removed the watcher's record and cache; the tab is gone from the panel"
+  echo "removed the watcher's record, charts data, and cache"
 fi
 
-# Anything else this plugin owns, and what to do about it.
-extra=(
-  "$HOME/.config/opencode-go-watcher/settings.json"
-  "$HOME/.config/opencode-go-watcher/settings.json.bak-ffa"
-)
-kept=()
-for path in "${extra[@]}"; do
-  [[ -e $path ]] && kept+=("$path")
-done
-
-if (( ${#kept[@]} > 0 )); then
+# The one thing that is not ours to delete: your Artificial Analysis key.
+settings="$CONFIG_HOME/opencode-go-watcher/settings.json"
+if [[ -e $settings ]]; then
   echo
-  echo "left in place, because they are yours and not recreated:"
-  printf '  %s\n' "${kept[@]}"
-  echo "delete them by hand if you want the configuration gone too"
+  echo "left in place, because it is a credential and not ours to remove:"
+  echo "  $settings"
+  echo "delete it by hand if you want the configuration gone too"
 fi
 
 cat <<'NEXT'

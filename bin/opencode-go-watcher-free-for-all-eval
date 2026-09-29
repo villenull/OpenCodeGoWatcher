@@ -1,0 +1,61 @@
+#!/usr/bin/python3
+# omarchy:summary=Start, watch, or cancel the Omniscience eval
+# omarchy:args=[start|status|cancel|run] [question-limit]
+# omarchy:hidden=true
+"""Drive the AA-Omniscience evaluation of every free model.
+
+A run is 600 questions x N free models x 2 LLM calls — about 2,400 calls and
+15-25 minutes. `start` validates the request, writes the initial state, and
+hands the work to a detached process, so closing the window or reloading the
+shell cannot kill a run that is already spending money. The window then polls
+`status` and reads progress from the state file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from ffa import eval as eval_mod  # noqa: E402
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Start, watch, or cancel the Omniscience eval")
+  parser.add_argument("action", choices=["start", "status", "cancel", "run"])
+  parser.add_argument("limit", nargs="?", type=int, help="questions per model (default: all 600)")
+  args = parser.parse_args()
+
+  if args.action == "status":
+    print(json.dumps(eval_mod.read_state(), separators=(",", ":")))
+    return 0
+
+  if args.action == "cancel":
+    state = eval_mod.read_state()
+    if not state.get("running"):
+      print("no eval run is in progress", file=sys.stderr)
+      return 1
+    eval_mod.request_cancel()
+    print("cancelling; the run stops after the calls in flight finish")
+    return 0
+
+  if args.action == "run":
+    # Internal: the detached process `start` spawns. Not a user-facing verb.
+    eval_mod.run(args.limit)
+    return 0
+
+  try:
+    started = eval_mod.start(args.limit)
+  except Exception as error:  # noqa: BLE001 - shown in the window
+    print(f"opencode-go-watcher-free-for-all-eval: {error}", file=sys.stderr)
+    return 1
+
+  print(json.dumps(started, separators=(",", ":")))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
