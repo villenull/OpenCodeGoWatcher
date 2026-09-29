@@ -112,14 +112,52 @@ Three ways to close it: `SUPER + W`, `Escape`, or the **Close** button. The
 button is there because the other two depend on the window having focus, and a
 window the user has just summoned may not have it yet.
 
-On placement: Hyprland decides where a new toplevel goes, and omarchy ships no
-window rules, so the window lands wherever the compositor puts it — on this
-machine, the right-hand side. The plugin does not control that. Quickshell's
-`FloatingWindow` exposes no position property, so pinning it centre needs a
-Hyprland window rule, which lives in your `~/.config/hypr/` rather than in the
-plugin. Ask if you want the exact line; omarchy's lua layer wraps
-`hyprctl dispatch` in a way that makes the obvious invocations fail, so it is
-worth getting right rather than guessing at in a README.
+### One line of Hyprland config, and why the plugin cannot do it
+
+A toplevel is not automatically an overlay. Hyprland still lays it out, so
+without a rule the window takes a slot in your layout, sits beside your
+terminals, and is dragged around by the tiling engine — a *managed* window, not
+an overlay. Making it behave like a floating window needs a window rule, and
+window rules live in Hyprland's config, not in a Quickshell plugin. This is the
+one part of the feature that cannot be self-contained.
+
+Create `~/.config/hypr/apps.lua`:
+
+```lua
+o.window({ class = "^org\\.quickshell$", title = "^OpenCode Go free models$" }, {
+  float = true,
+  center = true,
+  size = { 900, 960 },
+  pin = true,
+  noanim = true,
+  tag = "-default-opacity",
+})
+```
+
+and add one line to `~/.config/hypr/hyprland.lua`, after the other `require`s:
+
+```lua
+require("hypr.apps")
+```
+
+Then reload Hyprland. Each option earns its place:
+
+| Option | Why |
+|---|---|
+| `float` | the overlay behaviour — does not interact with the tiled windows |
+| `center` | open in the middle rather than wherever the compositor drops a new toplevel |
+| `size` | the window is a transparent surface with the card centred in it, so size it to leave a margin |
+| `pin` | without it the window opens on whichever workspace the shell process is on, which is not necessarily yours, and it looks like nothing happened |
+| `tag` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`; a chart is not a wallpaper, and at that alpha the window behind stays legible through the bars |
+
+Two traps worth knowing. The match is on the **class** when you pass a string,
+and the class here is `org.quickshell` — which is every Quickshell toplevel,
+including omarchy's own — so the table form matching `title` is required. And
+the rules are applied when a window is *mapped*, so a window already open keeps
+whatever it had: close it and summon it again to see a rule take effect.
+
+Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
+— you want `"floating":true` and `"pinned":true`.
 
 | Chart | Blocks | Source |
 |---|---|---|
@@ -189,6 +227,11 @@ omarchy plugin add https://github.com/villenull/OpenCodeGoWatcher --enable
 
 That is the entire install. `omarchy plugin update` keeps the checkout current,
 so there is a single copy on disk.
+
+For the free-model charts, add the one line of Hyprland config described under
+[*One line of Hyprland config*](#one-line-of-hyprland-config-and-why-the-plugin-cannot-do-it)
+— without it that window is a managed, tiled window rather than an overlay.
+Everything else works with no configuration at all.
 
 Then sign in to OpenCode Go if you have not already — `opencode auth login`, or
 any `opencode-go` model in opencode itself. The tab appears on the next

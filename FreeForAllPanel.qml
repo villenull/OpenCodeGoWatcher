@@ -165,10 +165,13 @@ Item {
       anchors.centerIn: parent
       width: root.boxW
       height: root.boxH
-      color: Color.background
+      // popups.background, not background: the raw background token carries the
+      // theme's background alpha, and a panel drawn in it is see-through —
+      // whatever is behind the window shows through the charts.
+      color: Color.popups.background
       radius: Style.cornerRadius
       border.width: 1
-      border.color: Qt.alpha(Color.muted, 0.4)
+      border.color: Qt.alpha(Color.popups.border, 0.6)
 
     FocusScope {
       anchors.fill: parent
