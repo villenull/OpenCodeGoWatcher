@@ -93,6 +93,34 @@ another subscription. If you would rather not carry the clone, skip all of this
 and use the `summon` line — which is also the only thing the plugin itself
 depends on.
 
+### Why the window is a toplevel, and how to close it
+
+The window is a Quickshell `FloatingWindow`, not a `PanelWindow`, and that is
+load-bearing rather than a style choice. Omarchy's other centred windows are
+`FloatingWindow`s: they are real toplevels, so Hyprland makes one the active
+window and `SUPER + W` — which is `hl.dsp.window.close()` — closes it. A
+`PanelWindow` is layer-shell, has no toplevel for the compositor to focus, and
+is therefore invisible to every window binding: it can only be dismissed by a
+keypress the surface happens to hold keyboard focus for, which is a much weaker
+guarantee.
+
+The trade is that a `FloatingWindow` fills the screen, so the window is
+transparent and the card is centred inside it — the same trade omarchy's own dev
+gallery makes with 3416x1390 of toplevel around a 720px panel.
+
+Three ways to close it: `SUPER + W`, `Escape`, or the **Close** button. The
+button is there because the other two depend on the window having focus, and a
+window the user has just summoned may not have it yet.
+
+On placement: Hyprland decides where a new toplevel goes, and omarchy ships no
+window rules, so the window lands wherever the compositor puts it — on this
+machine, the right-hand side. The plugin does not control that. Quickshell's
+`FloatingWindow` exposes no position property, so pinning it centre needs a
+Hyprland window rule, which lives in your `~/.config/hypr/` rather than in the
+plugin. Ask if you want the exact line; omarchy's lua layer wraps
+`hyprctl dispatch` in a way that makes the obvious invocations fail, so it is
+worth getting right rather than guessing at in a README.
+
 | Chart | Blocks | Source |
 |---|---|---|
 | Intelligence | `aa-index` — AA's published index | Artificial Analysis |

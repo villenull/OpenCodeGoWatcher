@@ -128,34 +128,25 @@ Item {
   // Preferred content size, clamped to leave a visible border on any screen.
   readonly property int boxW: Math.min(840, screenW - Style.space(80))
   readonly property int boxH: Math.min(900, screenH - Style.space(80))
-  readonly property int insetX: Math.max(Style.space(40), Math.round((screenW - boxW) / 2))
-  readonly property int insetY: Math.max(Style.space(40), Math.round((screenH - boxH) / 2))
-
-  // PanelWindow rather than FloatingWindow: a FloatingWindow is a toplevel, so
-  // the compositor drops it in a corner and it cannot be anchored at all. A
-  // PanelWindow is layer-shell, and anchoring all four edges with symmetric
-  // margins is how a Quickshell panel ends up centred. Anchoring all four with
-  // no margins would stretch it to the whole screen instead, which is why the
-  // margins are computed rather than omitted.
-  PanelWindow {
+  // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
+  // centred windows are FloatingWindows: they are real toplevels, so Hyprland
+  // makes one the active window and SUPER + W — which is
+  // `hl.dsp.window.close()` — closes it. A PanelWindow is layer-shell, has no
+  // toplevel for the compositor to focus, and is therefore uncloseable by any
+  // window binding; it can only be dismissed by a keypress this surface happens
+  // to hold focus for.
+  //
+  // The cost is that a FloatingWindow fills the screen, so the window is
+  // transparent and the actual card is centred inside it. That is the same
+  // trade omarchy's own dev gallery makes: 3416x1390 of toplevel around a
+  // 720px panel.
+  FloatingWindow {
     id: window
-    color: Color.background
+    title: "OpenCode Go free models"
+    color: "transparent"
     implicitWidth: root.boxW
     implicitHeight: root.boxH
-
-    anchors {
-      top: true
-      bottom: true
-      left: true
-      right: true
-    }
-
-    margins {
-      left: root.insetX
-      right: root.insetX
-      top: root.insetY
-      bottom: root.insetY
-    }
+    minimumSize: Qt.size(root.boxW, root.boxH)
 
     onVisibleChanged: {
       if (!visible && !root.closingFromHost && root.shell && typeof root.shell.hide === "function")
@@ -166,6 +157,18 @@ Item {
       anchors.fill: parent
       onCloseRequested: root.requestClose()
     }
+
+    // The visible card. The window behind it is transparent and full-screen, so
+    // this is the only thing drawn.
+    Rectangle {
+      id: card
+      anchors.centerIn: parent
+      width: root.boxW
+      height: root.boxH
+      color: Color.background
+      radius: Style.cornerRadius
+      border.width: 1
+      border.color: Qt.alpha(Color.muted, 0.4)
 
     FocusScope {
       anchors.fill: parent
@@ -221,6 +224,11 @@ Item {
                 bordered: true
                 enabled: !root.building
                 onClicked: root.refresh(true)
+              }
+              Button {
+                text: "Close"
+                bordered: true
+                onClicked: root.requestClose()
               }
             }
           }
@@ -425,6 +433,7 @@ Item {
           Item { width: 1; height: Style.space(20) }
         }
       }
+    }
     }
   }
 
