@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from ffa import complete, dashboard, eval as eval_mod, match, omniscience, opencode, store  # noqa: E402
+from ffa import aaweb, complete, dashboard, eval as eval_mod, match, omniscience, opencode, speed, store  # noqa: E402
 
 PASSED = 0
 FAILED = 0
@@ -35,6 +35,10 @@ FAILED = 0
 # leaderboard.
 SANDBOX = tempfile.TemporaryDirectory()
 _real_data_dir = store.data_dir
+# A real run leaves eval-state.json behind, so "the tests didn't write there" is
+# checked against its state before they ran, not against its absence.
+_real_state = _real_data_dir() / "eval-state.json"
+_real_state_before = _real_state.stat().st_mtime_ns if _real_state.exists() else None
 store.data_dir = lambda: Path(SANDBOX.name)
 
 
@@ -121,130 +125,69 @@ check("a missing message does not raise", "", complete.extract_text("chat", {"ch
 
 # ----------------------------------------------------- dashboard: AA variants
 
-section("dashboard: which configuration a number came from")
+section("dashboard: which effort a number came from")
 check("max effort is the default and is not restated", "", dashboard.config_label("GPT-6 Astra (max)"))
-check("a size survives the stripping of max", "3.3b", dashboard.config_label("Meta Spark (3.3B max)"))
-check("the deviations are the ones worth showing", "adaptive\u00b7fallback",
+check("AA's long form reduces to the effort", "medium",
+      dashboard.config_label("Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback)"))
+check("max in the long form says nothing", "",
       dashboard.config_label("Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)"))
-check("a no-fallback variant keeps the distinction", "adaptive\u00b7no fallback",
-      dashboard.config_label("Claude Opus 5 (Adaptive Reasoning, Max Effort, No Fallback)"))
-check("a named fallback model collapses to fallback", "adaptive\u00b7fallback",
-      dashboard.config_label("Claude Fable 5 (Adaptive Reasoning, Max Effort, Opus 4.8 Fallback)"))
-check("a non-max effort is a deviation and is shown", "high", dashboard.config_label("Gemini 3.7 Flash (high)"))
+check("a short form is read too", "medium", dashboard.config_label("GPT-6.1 Sol (medium)"))
+check("xhigh is not mistaken for high", "xhigh", dashboard.config_label("GPT-6 Astra (xhigh)"))
 check("a model with no parenthetical has no config", "", dashboard.config_label("Celeris-1"))
 check("an unrelated bracket is not a config", "", dashboard.config_label("Gemma 3 [2B]"))
-check("no label is wide enough to reach its neighbour", True,
-      all(len(dashboard.config_label(n)) <= 20 for n in [
-        "Claude Opus 5 (Adaptive Reasoning, Max Effort, No Fallback)",
-        "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)",
-      ]))
+check("a size is not an effort", "", dashboard.config_label("Meta Spark (3.3B max)"))
 
-section("dashboard: one row per base model")
+section("dashboard: AA's top models for context")
+def record(slug, name, release, intelligence, deprecated=False, speed=None, omni=None):
+  return {"slug": slug, "name": name, "releaseSlug": release, "intelligence": intelligence,
+          "tokensPerSecond": speed, "omniscience": omni, "deprecated": deprecated}
+
 VARIANTS = [
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)", "slug": "opus-max", "intelligence": 57.6, "tokensPerSecond": 61.0},
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback)", "slug": "opus-xhigh", "intelligence": 56.0, "tokensPerSecond": 55.0},
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback)", "slug": "opus-high", "intelligence": 53.6, "tokensPerSecond": 50.0},
-  {"name": "GPT-6 Astra (max)", "slug": "astra-max", "intelligence": 52.7, "tokensPerSecond": 76.0},
-  {"name": "GPT-6 Astra (xhigh)", "slug": "astra-xhigh", "intelligence": 52.4, "tokensPerSecond": 70.0},
-  {"name": "Celeris-1", "slug": "celeris-1", "intelligence": 50.0, "tokensPerSecond": 120.0},
+  record("opus-max", "Claude Opus 5.5 (Adaptive Reasoning, Max Effort)", "opus", 57.6),
+  record("opus-xhigh", "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort)", "opus", 58.0),
+  record("astra-max", "GPT-6 Astra (max)", "astra", 52.7),
+  record("astra-xhigh", "GPT-6 Astra (xhigh)", "astra", 52.4),
+  record("old", "Claude Opus 5 (max)", "opus-5", 60.0, deprecated=True),
+  record("celeris", "Celeris-1", "celeris", 50.0),
+  record("blank", "Blank (max)", "blank", None),
 ]
-def context(catalogue, field="intelligence", used=frozenset()):
-  """Rows as the snapshot actually emits them, display fields included."""
-  rows = dashboard._context_rows(catalogue, set(used), field, f"aa-{field}")
-  dashboard._add_short_labels([{"rows": rows}])
-  return rows
-
-rows = context(VARIANTS)
-check("three Opuses collapse to one row", 3, len(rows))
-check("and so do two Atras", 3, len({dashboard.short_label(r["label"]) for r in rows}))
-check("the winner is the max-effort entry", "opus-max", rows[0]["aaSlug"])
-check("a plain name is its own base", "celeris-1", [r for r in rows if r["aaSlug"] == "celeris-1"][0]["aaSlug"])
-check("each row carries its own config", "adaptive\u00b7fallback", rows[0]["configLabel"])
-
-section("dashboard: preferring max beats a higher raw score")
-# A model with no (max) entry still gets its best, and a model whose only entry
-# is a non-max effort keeps it rather than being dropped.
-MIXED = [
-  {"name": "Ranger 2 (high)", "slug": "ranger-high", "intelligence": 40.0, "tokensPerSecond": 30.0},
-  {"name": "Ranger 2 (medium)", "slug": "ranger-medium", "intelligence": 36.0, "tokensPerSecond": 28.0},
-  {"name": "Pike 3 (medium)", "slug": "pike-medium", "intelligence": 44.0, "tokensPerSecond": 60.0},
-]
-mixed = context(MIXED)
-check("without a max, the best score is kept", "ranger-high", mixed[1]["aaSlug"])
-check("and it is kept even when it is not max", "high", mixed[1]["configLabel"])
-check("a lone non-max model is not dropped", "pike-medium", mixed[0]["aaSlug"])
-
-section("dashboard: dedup respects the other filters")
-check("a used model is still excluded", 2, len(context(
-  VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "astra-max"})))
-check("excluding the max re-admits its sibling", ["astra-xhigh"],
-      [r["aaSlug"] for r in context(
-        VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "celeris-1", "astra-max"})])
-check("a missing value is skipped", 0, len(context([{"name": "Blank (max)", "slug": "blank", "intelligence": None}])))
-check("speed dedups the same way", 3, len(context(VARIANTS, field="tokensPerSecond")))
-many = VARIANTS + [
-  {"name": f"Model {n} (max)", "slug": f"m{n}", "intelligence": float(40 - n), "tokensPerSecond": 10.0}
-  for n in range(9)
-]
-check("the cap applies across distinct base models", 10, len(context(many)))
-check("the cap keeps the highest, in order", [57.6, 52.7, 50.0], [r["value"] for r in context(many)[:3]])
-dropped = {m["slug"] for m in many if m["slug"] not in {r["aaSlug"] for r in context(many)}}
-check("the weakest models are among those dropped", True, {"m7", "m8"} <= dropped)
-check("and so are the effort levels the dedupe removed", True, {"opus-xhigh", "opus-high"} <= dropped)
+top = dashboard._top_context(VARIANTS, set())
+check("one entry per release", 3, len(top))
+check("the max entry beats a higher non-max score", "opus-max", top[0]["slug"])
+check("retired models are left out", False, any(m["slug"] == "old" for m in top))
+check("a model without a score is left out", False, any(m["slug"] == "blank" for m in top))
+check("sorted by intelligence", ["opus-max", "astra-max", "celeris"], [m["slug"] for m in top])
+check("an orchestrator's release is not repeated as context", ["astra-max", "celeris"],
+      [m["slug"] for m in dashboard._top_context(VARIANTS, {"opus"})])
+many = [record(f"m{n}", f"Model {n} (max)", f"m{n}", float(n)) for n in range(20)]
+check("capped at TOP_CONTEXT", dashboard.TOP_CONTEXT, len(dashboard._top_context(many, set())))
 
 
-section("dashboard: one row per base model")
-VARIANTS = [
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)", "slug": "opus-max", "intelligence": 57.6, "tokensPerSecond": 61.0},
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback)", "slug": "opus-xhigh", "intelligence": 56.0, "tokensPerSecond": 55.0},
-  {"name": "Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback)", "slug": "opus-high", "intelligence": 53.6, "tokensPerSecond": 50.0},
-  {"name": "GPT-6 Astra (max)", "slug": "astra-max", "intelligence": 52.7, "tokensPerSecond": 76.0},
-  {"name": "GPT-6 Astra (xhigh)", "slug": "astra-xhigh", "intelligence": 52.4, "tokensPerSecond": 70.0},
-  {"name": "Celeris-1", "slug": "celeris-1", "intelligence": 50.0, "tokensPerSecond": 120.0},
-]
-def context(catalogue, field="intelligence", used=frozenset()):
-  """Rows as the snapshot actually emits them, display fields included."""
-  rows = dashboard._context_rows(catalogue, set(used), field, f"aa-{field}")
-  dashboard._add_short_labels([{"rows": rows}])
-  return rows
+# ----------------------------------------------------------------- aaweb.py
 
-rows = context(VARIANTS)
-check("three Opuses collapse to one row", 3, len(rows))
-check("and so do two Atras", 3, len({dashboard.short_label(r["label"]) for r in rows}))
-check("the winner is the max-effort entry", "opus-max", rows[0]["aaSlug"])
-check("a plain name is its own base", "celeris-1", [r for r in rows if r["aaSlug"] == "celeris-1"][0]["aaSlug"])
-check("each row carries its own config", "adaptive\u00b7fallback", rows[0]["configLabel"])
+section("aaweb: records from AA's page payload")
+def rsc(payload: str) -> str:
+  escaped = payload.replace("\\", "\\\\").replace('"', '\\"')
+  return f'<script>self.__next_f.push([1,"{escaped}"])</script>'
 
-section("dashboard: preferring max beats a higher raw score")
-# A model with no (max) entry still gets its best, and a model whose only entry
-# is a non-max effort keeps it rather than being dropped.
-MIXED = [
-  {"name": "Ranger 2 (high)", "slug": "ranger-high", "intelligence": 40.0, "tokensPerSecond": 30.0},
-  {"name": "Ranger 2 (medium)", "slug": "ranger-medium", "intelligence": 36.0, "tokensPerSecond": 28.0},
-  {"name": "Pike 3 (medium)", "slug": "pike-medium", "intelligence": 44.0, "tokensPerSecond": 60.0},
-]
-mixed = context(MIXED)
-check("without a max, the best score is kept", "ranger-high", mixed[1]["aaSlug"])
-check("and it is kept even when it is not max", "high", mixed[1]["configLabel"])
-check("a lone non-max model is not dropped", "pike-medium", mixed[0]["aaSlug"])
-
-section("dashboard: dedup respects the other filters")
-check("a used model is still excluded", 2, len(context(
-  VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "astra-max"})))
-check("excluding the max re-admits its sibling", ["astra-xhigh"],
-      [r["aaSlug"] for r in context(
-        VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "celeris-1", "astra-max"})])
-check("a missing value is skipped", 0, len(context([{"name": "Blank (max)", "slug": "blank", "intelligence": None}])))
-check("speed dedups the same way", 3, len(context(VARIANTS, field="tokensPerSecond")))
-many = VARIANTS + [
-  {"name": f"Model {n} (max)", "slug": f"m{n}", "intelligence": float(40 - n), "tokensPerSecond": 10.0}
-  for n in range(9)
-]
-check("the cap applies across distinct base models", 10, len(context(many)))
-check("the cap keeps the highest, in order", [57.6, 52.7, 50.0], [r["value"] for r in context(many)[:3]])
-dropped = {m["slug"] for m in many if m["slug"] not in {r["aaSlug"] for r in context(many)}}
-check("the weakest models are among those dropped", True, {"m7", "m8"} <= dropped)
-check("and so are the effort levels the dedupe removed", True, {"opus-xhigh", "opus-high"} <= dropped)
+PAGE = rsc(
+  '{"id":"11111111-1111-1111-1111-111111111111","slug":"opus-medium","name":"Claude Opus 5.5 (Medium Effort)",'
+  '"release":{"slug":"opus","name":"Claude Opus 5.5"},"deprecated":false,"intelligenceIndex":51.2,'
+  '"omniscience":null,"intelligenceIndexEvaluations":[{"slug":"omniscience","score":40.3}],'
+  '"timescaleData":{"medianOutputSpeed":74.0}},'
+  '{"id":"22222222-2222-2222-2222-222222222222","slug":"old","name":"Old (max)",'
+  '"release":{"slug":"old","name":"Old"},"deprecated":true,"intelligenceIndex":30.5,"omniscience":-13.1}'
+)
+parsed = aaweb.parse_models(PAGE)
+check("both records are read", ["old", "opus-medium"], sorted(parsed))
+check("intelligence is read", 51.2, parsed["opus-medium"]["intelligence"])
+check("speed comes from the timescale data", 74.0, parsed["opus-medium"]["tokensPerSecond"])
+check("omniscience prefers the evaluation list", 40.3, parsed["opus-medium"]["omniscience"])
+check("and falls back to the top-level field", -13.1, parsed["old"]["omniscience"])
+check("the release is recorded", "opus", parsed["opus-medium"]["releaseSlug"])
+check("deprecation is read", True, parsed["old"]["deprecated"])
+check("a missing speed is None", None, parsed["old"]["tokensPerSecond"])
+check("a page with no payload has no models", {}, aaweb.parse_models("<html></html>"))
 
 
 # ----------------------------------------------------------- omniscience.py
@@ -341,71 +284,85 @@ section("dashboard: snapshot assembly")
 
 
 def build_with(free_models, catalogue, grades=(), speed_rows=()):
-  """Snapshot assembly with the two network fetchers replaced."""
+  """Snapshot assembly with the network fetchers replaced. `catalogue` is a
+  list of aaweb-shaped records."""
   original_fetch, original_aa, original_history, original_speed = (
-    opencode.fetch_go_models, dashboard.aa.fetch_aa_catalogue,
+    opencode.fetch_go_models, dashboard.aaweb.fetch_models,
     store.read_eval_history, dashboard.store.read_data,
   )
   try:
     opencode.fetch_go_models = lambda: free_models
-    dashboard.aa.fetch_aa_catalogue = lambda: {"models": catalogue, "indexVersion": "v4", "warnings": []}
+    dashboard.aaweb.fetch_models = lambda force=False: {
+      "models": {model["slug"]: model for model in catalogue}, "fetchedAt": 1.0, "warning": None}
     store.read_eval_history = lambda: list(grades)
     dashboard.store.read_data = lambda name: ({"probedAt": "2026-01-01T00:00:00Z", "rows": list(speed_rows)}
                                                if name == "speed" else None)
     return dashboard.build_snapshot(force=True)
   finally:
-    opencode.fetch_go_models, dashboard.aa.fetch_aa_catalogue = original_fetch, original_aa
+    opencode.fetch_go_models, dashboard.aaweb.fetch_models = original_fetch, original_aa
     store.read_eval_history, dashboard.store.read_data = original_history, original_speed
 
 
 FREE = [{"id": "space-bunny-free", "label": "Space Bunny Free", "suffixed": True, "note": "zero-retention"},
         {"id": "longcat-2.5-preview-free", "label": "Longcat 2.5 Preview Free", "suffixed": True, "note": "zero-retention"}]
 
+ORCHESTRATORS = [
+  record("claude-opus-5-5-medium", "Claude Opus 5.5 (Adaptive Reasoning, Medium Effort)", "claude-opus-5-5", 51.2, speed=74.0, omni=40.3),
+  record("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Adaptive Reasoning, Medium Effort)", "claude-sonnet-5-5", 40.7, speed=91.4, omni=20.1),
+  record("gpt-6-1-sol-medium", "GPT-6.1 Sol (medium)", "gpt-6-1-sol", 47.8, speed=60.7, omni=40.0),
+  record("gpt-6-astra-medium", "GPT-6 Astra (medium)", "gpt-6-astra", 49.6, speed=46.3, omni=42.2),
+]
+TOPS = [
+  record("claude-opus-5-5", "Claude Opus 5.5 (Adaptive Reasoning, Max Effort)", "claude-opus-5-5", 57.6, speed=92.0, omni=46.4),
+  record("fable", "Claude Fable 5.1 (max)", "fable", 53.4, speed=69.0, omni=43.5),
+]
+
 bare = build_with(FREE, [])
-check("without AA there is one intelligence block", ["aa-index"], [b["scale"] for b in bare["rows"]["intelligence"]])
-check("and no omniscience block", False, any(b["scale"] == "omniscience" for b in bare["rows"]["intelligence"]))
+check("the smarts blocks are Omniscience then AA's index", ["omniscience", "aa-index"],
+      [b["scale"] for b in bare["rows"]["intelligence"]])
+check("with no AA data they are empty", [0, 0], [len(b["rows"]) for b in bare["rows"]["intelligence"]])
 check("both free models are unmatched", 2, len(bare["unmatched"]))
+check("and there is nothing to summarise", [], bare["summary"])
 
-scored = build_with(
-  FREE, [{"name": "Space Bunny", "slug": "space-bunny", "intelligence": 42.0, "tokensPerSecond": 90.0}],
-  grades=[{"opencodeId": "space-bunny-free", "index": -0.31, "accuracy": 0.41,
-           "hallucinationRate": 0.59, "answered": 250, "total": 600}],
+full = build_with(
+  FREE, ORCHESTRATORS + TOPS,
+  grades=[{"opencodeId": "space-bunny-free", "index": 0.12, "accuracy": 0.41,
+           "hallucinationRate": 0.59, "answered": 80, "total": 100},
+          {"opencodeId": "longcat-2.5-preview-free", "index": -0.05, "accuracy": 0.3,
+           "hallucinationRate": 0.7, "answered": 70, "total": 100}],
+  speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 475, "tokens": 561}],
 )
-blocks = {block["scale"]: block for block in scored["rows"]["intelligence"]}
-check("a grade adds the omniscience block", True, "omniscience" in blocks)
-check("the index is expressed in points", -31.0, blocks["omniscience"]["rows"][0]["value"])
-check("a self-measured row is marked self", "self", blocks["omniscience"]["rows"][0]["source"])
-check("the note carries the grade detail", True, "accuracy 41%" in blocks["omniscience"]["rows"][0]["note"])
-check("and the question count", True, "600 questions" in blocks["omniscience"]["rows"][0]["note"])
-check("an unmatched model with a grade is not unmatched", ["longcat-2.5-preview-free"], scored["unmatched"])
-check("AA and our own index stay in separate blocks", True,
-      blocks["aa-index"]["domain"]["max"] != blocks["omniscience"]["domain"]["max"])
-
-speed_block = scored["rows"]["speed"][0]
-check("the speed chart prefers AA over a probe", "aa", speed_block["rows"][0]["source"])
-check("and reports the free model first", "Space Bunny Free", speed_block["rows"][0]["label"])
-
-probed = build_with(
-  FREE, [],
-  speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 475, "tokens": 561},
-              {"opencodeId": "longcat-2.5-preview-free", "tokensPerSecond": None, "tokens": None, "error": "buffered"}],
-)
-rows = probed["rows"]["speed"][0]["rows"]
-check("a self probe fills the speed chart when AA cannot", "self", rows[0]["source"])
-check("and carries its own note", True, "self-measured" in rows[0]["note"])
-check("a failed probe leaves the model unmatched", ["longcat-2.5-preview-free"], probed["unmatched"])
-
-section("dashboard: context rows")
-many = [{"name": f"Model {index}", "slug": f"model-{index}", "intelligence": float(index), "tokensPerSecond": float(index)}
-        for index in range(1, 31)]
-crowded = build_with(FREE, many)
-check("at most ten context rows per block", dashboard.CONTEXT_LIMIT, len(crowded["rows"]["speed"][0]["rows"]))
-check("context rows are the top ten by value", "Model 30", crowded["rows"]["speed"][0]["rows"][0]["label"])
-check("context rows are not marked free", False, crowded["rows"]["speed"][0]["rows"][0]["isFree"])
+blocks = {block["scale"]: block for block in full["rows"]["intelligence"]}
+omni_roles = {row["key"]: row["role"] for row in blocks["omniscience"]["rows"]}
+check("the orchestrators are on the Omniscience chart", 4, list(omni_roles.values()).count("orchestrator"))
+check("so are both free models", 2, list(omni_roles.values()).count("free"))
+check("AA's top model is context", "context", omni_roles.get("aa:fable"))
+check("an orchestrator's own max entry is not repeated", False, "aa:claude-opus-5-5" in omni_roles)
+free_omni = [row for row in blocks["omniscience"]["rows"] if row["role"] == "free"]
+check("our index is expressed in points", 12.0, [r["value"] for r in free_omni if r["opencodeId"] == "space-bunny-free"][0])
+check("a self-measured row is marked self", "self", free_omni[0]["source"])
+check("the note carries the question count", True, "100 questions" in free_omni[0]["note"])
+check("the orchestrator's effort shows as its config", "medium",
+      [r for r in blocks["aa-index"]["rows"] if r["key"] == "aa:claude-opus-5-5-medium"][0]["configLabel"])
 check("rows are sorted descending", True,
-      all(crowded["rows"]["speed"][0]["rows"][i]["value"] >= crowded["rows"]["speed"][0]["rows"][i + 1]["value"]
-          for i in range(len(crowded["rows"]["speed"][0]["rows"]) - 1)))
+      all(a["value"] >= b["value"] for a, b in zip(blocks["omniscience"]["rows"], blocks["omniscience"]["rows"][1:])))
+check("a negative score keeps its sign", -5.0,
+      [r["value"] for r in free_omni if r["opencodeId"] == "longcat-2.5-preview-free"][0])
+check("so the domain goes below zero", True, blocks["omniscience"]["domain"]["min"] < 0)
 
+speed_rows_out = full["rows"]["speed"][0]["rows"]
+check("the probed free model leads the speed chart", "Space Bunny Free", speed_rows_out[0]["label"])
+check("and is marked self-measured", "self", speed_rows_out[0]["source"])
+check("the orchestrators' speeds are there", 4, sum(1 for r in speed_rows_out if r["role"] == "orchestrator"))
+
+check("the summary compares a free model to the orchestrators", True,
+      any(line.startswith("Space Bunny Free: Omniscience 12 vs your orchestrators' 20–42") for line in full["summary"]))
+check("and states its speed against theirs", True, any("× their typical speed" in line for line in full["summary"]))
+check("and names the smarter free model", "Smarter free model right now: Space Bunny Free", full["summary"][-1])
+
+warned = build_with(FREE, TOPS)
+check("a missing orchestrator is called out", True,
+      any("no entry for" in w and "gpt-6-astra-medium" in w for w in warned["warnings"]))
 
 
 section("dashboard: which operations still owe us a result")
@@ -465,22 +422,133 @@ check("and its global question count", 600, finished["currentQuestion"])
 
 check("state was written atomically into the sandbox", True,
       (Path(SANDBOX.name) / "eval-state.json").exists())
-check("and not into the real data directory", False,
-      (_real_data_dir() / "eval-state.json").exists())
+# A live run can legitimately update the real file meanwhile, so a change only
+# counts against the tests when no run is in progress.
+_real_state_after = _real_state.stat().st_mtime_ns if _real_state.exists() else None
+_live_run = _real_state.exists() and '"running": true' in _real_state.read_text()
+check("and not into the real data directory", True,
+      _real_state_after == _real_state_before or _live_run)
 
-section("eval: the progress counter counts every model")
-# The original compared a per-model index against a global total, so the readout
-# restarted at 1/1200 for each model. The counter is now a single global tally.
-total = 600 * 2
-done = 0
-seen = []
-for _model in range(2):
-  for _question in range(600):
-    done += 1
-    seen.append(done)
-check("the counter is monotonic across models", True, seen == sorted(seen))
-check("and never restarts", 1200, seen[-1])
-check("so it agrees with the total", total, seen[-1])
+section("eval: a run counts progress across every model")
+# The counter used to be defined and never called, so a run sat at 0% until it
+# finished. Run the real loop with the network replaced.
+patches = {
+  (store, "opencode_key"): lambda: ("key", "test"),
+  (eval_mod.opencode, "fetch_go_models"): lambda: [{"id": "a-free", "label": "A Free"}, {"id": "b-free", "label": "B Free"}],
+  (eval_mod.omniscience, "fetch_questions"): lambda: [
+    {"questionId": n, "domain": "D", "topic": "T", "question": f"Q{n}", "answer": "A"} for n in range(12)],
+  (eval_mod.complete_mod, "complete"): lambda key, model, prompt, tokens: "an answer",
+  (eval_mod, "grade"): lambda prompt: "A",
+}
+saved = {target: getattr(*target) for target in patches}
+history_before = len(store.read_eval_history())
+writes = []
+original_write = eval_mod.write_state
+try:
+  for (owner, name), value in patches.items():
+    setattr(owner, name, value)
+  eval_mod.write_state = lambda state: (writes.append(state.get("currentQuestion")), original_write(state))
+  final = eval_mod.run(limit=3)
+finally:
+  for (owner, name), value in saved.items():
+    setattr(owner, name, value)
+  eval_mod.write_state = original_write
+counts = [c for c in writes if isinstance(c, int)]
+check("the run finishes", "Run complete", final["message"])
+check("it graded limit x models questions", 6, final["totalQuestions"])
+check("the counter moved during the run", True, {1, 2, 3, 4, 5} <= set(counts))
+check("and never went backwards", True, counts == sorted(counts))
+check("one history entry per free model", history_before + 2, len(store.read_eval_history()))
+
+section("eval: a slow answer doesn't sink the run")
+flaky = {"calls": 0}
+def flaky_complete(key, model, prompt, tokens):
+  flaky["calls"] += 1
+  if "Q0" in prompt:
+    raise RuntimeError(f"{model} request failed: The read operation timed out")
+  if "Q1" in prompt and flaky["calls"] % 2 == 1:
+    raise RuntimeError(f"{model} request failed: reset")
+  return "an answer"
+patches = {
+  (store, "opencode_key"): lambda: ("key", "test"),
+  (eval_mod.opencode, "fetch_go_models"): lambda: [{"id": "a-free", "label": "A Free"}, {"id": "b-free", "label": "B Free"}],
+  (eval_mod.omniscience, "fetch_questions"): lambda: [
+    {"questionId": n, "domain": "D", "topic": "T", "question": f"Q{n}", "answer": "A"} for n in range(4)],
+  (eval_mod.complete_mod, "complete"): flaky_complete,
+  (eval_mod, "grade"): lambda prompt: "A",
+  (eval_mod.time, "sleep"): lambda seconds: None,
+}
+saved = {target: getattr(*target) for target in patches}
+before = len(store.read_eval_history())
+try:
+  for (owner, name), value in patches.items():
+    setattr(owner, name, value)
+  final = eval_mod.run(limit=4, models=["b-free"])
+finally:
+  for (owner, name), value in saved.items():
+    setattr(owner, name, value)
+history = store.read_eval_history()
+check("the run still completes", "Run complete", final["message"])
+check("only the named model was graded", before + 1, len(history))
+check("and it was that model", "b-free", history[0]["opencodeId"])
+check("the question that never answered is skipped, not scored", 1, history[0]["skipped"])
+check("so the score covers the rest", 3, history[0]["total"])
+check("a question that failed once was retried and kept", 3, history[0]["answered"])
+try:
+  eval_mod._chosen([{"id": "a-free", "label": "A"}], ["nope-free"])
+  check("naming an unknown model is an error", True, False)
+except RuntimeError as error:
+  check("naming an unknown model is an error", True, "nope-free" in str(error))
+
+section("speed: probing one model keeps the others")
+store.write_data("speed", {"probedAt": "t0", "rows": [
+  {"opencodeId": "a-free", "tokensPerSecond": 475, "tokens": 561},
+  {"opencodeId": "b-free", "tokensPerSecond": 81, "tokens": 700}]})
+speed.save_rows([{"opencodeId": "b-free", "tokensPerSecond": 90, "tokens": 650}])
+kept = {row["opencodeId"]: row["tokensPerSecond"] for row in store.read_data("speed")["rows"]}
+check("the other model's measurement survives", 475, kept["a-free"])
+check("the probed model is updated", 90, kept["b-free"])
+speed.save_rows([{"opencodeId": "a-free", "tokensPerSecond": None, "error": "buffered"}])
+check("a failed sample doesn't erase a good one", 475,
+      {row["opencodeId"]: row["tokensPerSecond"] for row in store.read_data("speed")["rows"]}["a-free"])
+speed.save_rows([{"opencodeId": "c-free", "tokensPerSecond": None, "error": "buffered"}])
+check("but a model never measured records its failure", "buffered",
+      {row["opencodeId"]: row.get("error") for row in store.read_data("speed")["rows"]}["c-free"])
+
+section("eval: sampling and grading")
+questions = [{"questionId": n} for n in range(600)]
+sampled = eval_mod.sample_questions(questions, 100)
+check("a sample has the requested size", 100, len(sampled))
+check("it strides the whole set, not its head", True, sampled[-1]["questionId"] > 500)
+check("no limit means every question", 600, len(eval_mod.sample_questions(questions, None)))
+check("a limit past the end is the whole set", 600, len(eval_mod.sample_questions(questions, 900)))
+check("the default run is sized for Big Pickle", 100, eval_mod.DEFAULT_QUESTIONS)
+check("the grader is Big Pickle on Zen", "opencode/big-pickle", eval_mod.GRADER_MODEL)
+
+class _Done:
+  def __init__(self, stdout, stderr=""):
+    self.stdout, self.stderr = stdout, stderr
+
+calls = []
+original_run = eval_mod.subprocess.run
+try:
+  eval_mod.subprocess.run = lambda args, **kw: (calls.append((args, kw)), _Done(
+    '{"type":"step_start"}\n{"type":"text","part":{"type":"text","text":"B"}}\nnot json\n'))[1]
+  verdict = eval_mod.grade("the prompt")
+  args, kwargs = calls[0]
+  check("the verdict is the text part", "B", verdict)
+  check("the grader runs read-only", True, args[args.index("--agent") + 1] == "plan")
+  check("without plugins", True, "--pure" in args)
+  check("with the grader model", "opencode/big-pickle", args[args.index("-m") + 1])
+  check("in a scratch directory, not the plugin's", True, "ogw-grade-" in kwargs["cwd"])
+  eval_mod.subprocess.run = lambda args, **kw: _Done("", "Error: daily limit reached")
+  try:
+    eval_mod.grade("x")
+    check("no verdict is an error", True, False)
+  except RuntimeError as error:
+    check("no verdict is an error that says why", True, "daily limit reached" in str(error))
+finally:
+  eval_mod.subprocess.run = original_run
 
 
 print()

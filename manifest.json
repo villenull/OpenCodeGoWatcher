@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "io.github.villenull.opencode-go-watcher",
   "name": "OpenCode Go Watcher",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "villenull",
   "license": "MIT",
   "homepage": "https://github.com/villenull/OpenCodeGoWatcher",
-  "description": "OpenCode Go usage, rate limits, and free-model charts in the stock omarchy.agents panel.",
+  "description": "OpenCode Go usage and rate limits in the agents panel, plus a window comparing the free models with your orchestrators.",
   "kinds": [
     "service",
     "panel"

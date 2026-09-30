@@ -170,6 +170,7 @@ Item {
   readonly property var speedBlocks: (snapshot && snapshot.rows && snapshot.rows.speed) ? snapshot.rows.speed : []
   readonly property var freeModels: (snapshot && snapshot.freeModels) ? snapshot.freeModels : []
   readonly property var warnings: (snapshot && snapshot.warnings) ? snapshot.warnings : []
+  readonly property var summary: (snapshot && snapshot.summary) ? snapshot.summary : []
 
   // Which of the three operations in the Benchmark box still owe us a result for
   // at least one free model. The snapshot computes this per model rather than
@@ -220,12 +221,10 @@ Item {
   // Sized so the header, the free-model list, both ten-row charts, the warnings
   // and the attribution all fit at once: the whole point of a comparison view is
   // being able to see both charts together, and scrolling defeats that.
-  readonly property int boxW: Math.min(1180, screenW - Style.space(80))
-  // 800, not 1010: the content measures 752px with the header on two rows, so
-  // the old height left 239px of empty card below the last line. Anything that
-  // grows past this — an eval in flight, more free models — scrolls, which the
-  // ScrollView already handles.
-  readonly property int boxH: Math.min(800, screenH - Style.space(80))
+  readonly property int boxW: Math.min(1080, screenW - Style.space(80))
+  // Fits the header, three side-by-side charts of ~10 rows, the summary and the
+  // legend. Anything taller — an eval in flight, more rows — scrolls.
+  readonly property int boxH: Math.min(500, screenH - Style.space(80))
   // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
   // centred windows are FloatingWindows: they are real toplevels, so Hyprland
   // makes one the active window and SUPER + W — which is
@@ -292,7 +291,9 @@ Item {
           Column {
             width: parent.width
             spacing: Style.space(4)
-            visible: (root.evalState.running || root.evalState.message || root.evalState.error) ? true : false
+            // Only while a run is going or after one failed: "Run complete" is
+            // already said by the charts themselves.
+            visible: (root.evalState.running || root.evalState.error) ? true : false
 
             Text {
               width: parent.width
@@ -351,198 +352,127 @@ Item {
             font.pixelSize: Style.font.bodySmall
           }
 
-          // ----------------------------------------------------- free models
-          Column {
+          // ---------------------------------------------------------- header
+          // Title and the three operations on one line; the free models under
+          // it. The buttons are ringed red while a free model still has no
+          // result from that operation — a "not done yet" cue, not a disabled
+          // state.
+          Item {
             width: parent.width
-            spacing: Style.space(4)
+            height: Math.max(titleText.implicitHeight, actions.implicitHeight)
 
-            // The heading is a plain Text in the Column now. It used to sit in an
-            // Item whose height was the max of the heading and the action row to
-            // its right, so the two were baseline-aligned; the actions are the
-            // Benchmark box below now, and leaving that wrapper in place made its
-            // height a NaN and silently collapsed the heading to nothing.
             Text {
-              id: freeTodayTitle
-              width: parent.width
-              text: "What's Free for all?"
+              id: titleText
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "OpenCode Go · free models"
               color: root.textStrong
               font.family: Style.font.family
               font.pixelSize: Style.font.subtitle
               font.bold: true
             }
 
-            // The three operations that produce the two charts, as one group.
-            // They were previously split: the eval and the AA refresh sat in the
-            // header, and Measure speed sat in its own row under the model list
-            // with a "probed <timestamp>" caption. They are one box because the
-            // caption is gone and the red ring now carries the only per-operation
-            // state worth showing.
-            // Benchmark on the left, the names it produces on the right. This
-            // was three stacked rows — heading, buttons, names — for about 90px of
-            // header. An Item rather than a Row because both sides need to be
-            // centred on one another, and a Row sizes its children to their own
-            // implicit heights, so a child cannot anchor to the Row's centre
-            // without a binding loop.
-            Item {
-              id: headerRow
-              width: parent.width
-              readonly property real nameGap: Style.space(24)
-              height: Math.max(benchmarkRow.implicitHeight, namesColumn.implicitHeight)
-
             Row {
-              id: benchmarkRow
-              anchors.left: parent.left
+              id: actions
+              anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(10)
+              spacing: Style.space(8)
 
+              Button {
+                text: root.building ? "Refreshing…" : "Refresh"
+                bordered: true
+                enabled: !root.building
+                onClicked: root.refresh(true)
+              }
+
+              Button {
+                text: root.evalState.running ? "Cancel" : "Run Omniscience"
+                bordered: true
+                enabled: !evalAction.running
+                onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
+                Rectangle {
+                  anchors.fill: parent
+                  radius: Style.cornerRadius
+                  color: "transparent"
+                  border.width: 1
+                  border.color: root.textUrgent
+                  visible: root.intelligencePending && !root.evalState.running
+                }
+              }
+
+              Button {
+                text: speedAction.running ? "Measuring…" : "Measure speed"
+                bordered: true
+                enabled: !speedAction.running
+                onClicked: root.measureSpeed()
+                Rectangle {
+                  anchors.fill: parent
+                  radius: Style.cornerRadius
+                  color: "transparent"
+                  border.width: 1
+                  border.color: root.textUrgent
+                  visible: root.speedPending
+                }
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: root.freeModels.length === 0
+              ? "opencode Go is serving no free models right now."
+              : "Free now: " + root.freeModels.map(function (model) { return model.label }).join("  ·  ")
+            color: root.freeModels.length === 0 ? root.textSoft : root.textAccent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: root.freeModels.length > 0
+          }
+
+          PanelSeparator { width: parent.width }
+
+          // ---------------------------------------------------------- charts
+          // Omniscience | AA Intelligence Index | Output speed, side by side.
+          Row {
+            id: charts
+            width: parent.width
+            spacing: Style.space(20)
+            readonly property var blocks: root.intelligenceBlocks.concat(root.speedBlocks)
+            readonly property real columnWidth: blocks.length > 0
+              ? (width - spacing * (blocks.length - 1)) / blocks.length : width
+
+            Repeater {
+              model: charts.blocks
+              FreeForAllBars {
+                width: charts.columnWidth
+                block: modelData
+                textStrong: root.textStrong
+                textSoft: root.textSoft
+                textFaint: root.textFaint
+                accentColor: root.textAccent
+              }
+            }
+          }
+
+          // --------------------------------------------------------- summary
+          Column {
+            width: parent.width
+            spacing: Style.space(2)
+            visible: root.summary.length > 0
+
+            Repeater {
+              model: root.summary
               Text {
-                id: benchmarkLabel
-                text: "Benchmark"
-                color: root.textStrong
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: modelData
+                color: root.textAccent
                 font.family: Style.font.family
-                font.pixelSize: Style.font.subtitle
-                font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Rectangle {
-                id: benchmarkBox
-                anchors.verticalCenter: parent.verticalCenter
-                width: benchmarkButtons.width + Style.space(20)
-                height: benchmarkButtons.height + Style.space(12)
-                color: "transparent"
-                radius: Style.cornerRadius
-                border.width: 1
-                border.color: root.textFaint
-
-                Row {
-                  id: benchmarkButtons
-                  anchors.centerIn: parent
-                  spacing: Style.space(8)
-
-                  Button {
-                    id: aaButton
-                    text: root.building ? "Refreshing…" : "AA"
-                    bordered: true
-                    enabled: !root.building
-                    onClicked: root.refresh(true)
-                  }
-
-                  Button {
-                    id: intelligenceButton
-                    text: root.evalState.running ? "Cancel" : "Intelligence"
-                    bordered: true
-                    enabled: !evalAction.running
-                    onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
-                    // A red ring while any free model still has no grade from us.
-                    // The button still works — it is a "not done yet" cue, not a
-                    // disabled state.
-                    Rectangle {
-                      anchors.fill: parent
-                      radius: Style.cornerRadius
-                      color: "transparent"
-                      border.width: 1
-                      border.color: root.textUrgent
-                      visible: root.intelligencePending
-                    }
-                  }
-
-                  Button {
-                    id: speedButton
-                    text: speedAction.running ? "Probing…" : "Speed"
-                    bordered: true
-                    enabled: !speedAction.running
-                    onClicked: root.measureSpeed()
-                    Rectangle {
-                      anchors.fill: parent
-                      radius: Style.cornerRadius
-                      color: "transparent"
-                      border.width: 1
-                      border.color: root.textUrgent
-                      visible: root.speedPending
-                    }
-                  }
-                }
-              }
-            }
-
-
-              Column {
-                id: namesColumn
-                anchors.left: benchmarkRow.right
-                anchors.leftMargin: headerRow.nameGap
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - headerRow.nameGap - benchmarkRow.width
-                spacing: Style.space(2)
-
-                Text {
-                  width: parent.width
-                  wrapMode: Text.Wrap
-                  visible: root.freeModels.length === 0
-                  text: "opencode Go is serving no free models right now."
-                  color: root.textSoft
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-
-                Repeater {
-                  model: root.freeModels
-                  Text {
-                    width: parent.width
-                    text: modelData.label
-                    color: root.textAccent
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                    elide: Text.ElideRight
-                  }
-                }
+                font.pixelSize: Style.font.body
               }
             }
           }
 
-          PanelSeparator { width: parent.width }
-
-          // ------------------------------------------- chart 1: intelligence
-          Column {
-            width: parent.width
-            spacing: Style.space(8)
-
-            // No section heading and no legend. Each block already names itself
-            // — "Artificial Analysis Intelligence Index", "Output speed" — so
-            // "Intelligence" above that was a third level of the same label, and
-            // the legend spelled out a distinction the window already makes
-            // visually: the free model's column and its label are the accent
-            // colour, and only the self-measured one is outlined.
-            Repeater {
-              model: root.intelligenceBlocks
-              FreeForAllBlock {
-                width: content.width
-                block: modelData
-                // The Omniscience index is signed, so a negative one has to be
-                // readable as negative: a diverging block draws its zero rule.
-                showZero: modelData.scale === "omniscience"
-              }
-            }
-          }
-
-          PanelSeparator { width: parent.width }
-
-          // -------------------------------------------------- chart 2: speed
-          Column {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Repeater {
-              model: root.speedBlocks
-              FreeForAllBlock {
-                width: content.width
-                block: modelData
-              }
-            }
-          }
-
-          // -------------------------------------------------------- warnings
           Repeater {
             model: root.warnings
             Text {
@@ -555,14 +485,13 @@ Item {
             }
           }
 
-          PanelSeparator { width: parent.width }
-
-          // A licence condition of AA's data API, so it stays.
+          // Legend and source in one line. Crediting Artificial Analysis stays.
           Text {
             width: parent.width
             wrapMode: Text.Wrap
-            text: "Leaderboard and speed figures from Artificial Analysis."
-            color: root.textSoft
+            text: "Accent: free · bold: your orchestrators (medium effort) · dim: AA's top models · outlined: measured here. "
+                  + "Other figures from Artificial Analysis."
+            color: root.textFaint
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
           }

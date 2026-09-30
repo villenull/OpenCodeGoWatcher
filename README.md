@@ -34,11 +34,28 @@ truth.
 
 ## Free-model charts
 
-A second window compares the free models on your plan: **intelligence** and
-**output speed**, each with paid Artificial Analysis models alongside for scale.
-It also runs the AA-Omniscience evaluation, which produces our own intelligence
-number, so you are not dependent on anyone having published a score for a
-stealth model.
+A second window answers one question: **how do the free models compare with
+the models you orchestrate with?** It puts the free models next to Claude Opus
+5.5, Claude Sonnet 5.5, GPT-6.1 Sol and GPT-6 Astra at medium effort, plus a few
+of Artificial Analysis's top models for scale, on three charts side by side:
+
+| Chart | Paid models | Free models |
+|---|---|---|
+| **AA-Omniscience** (−100…100) | published by Artificial Analysis | our own run, graded by Big Pickle |
+| **AA Intelligence Index** | published by Artificial Analysis | only if AA publishes one |
+| **Output speed** (tokens/s) | published by Artificial Analysis | measured locally, the way AA measures |
+
+Omniscience is the one test both sides take — AA publishes it for every model
+and the plugin runs the public question set itself — so it is the chart that
+says how much "dumber" a free model is. A line under the charts spells it out,
+e.g. *Space Bunny Free: Omniscience 35 vs your orchestrators' 20–42 · 6.4× their
+typical speed*. It is directional: our run is 100 questions graded by Big
+Pickle, AA's is 6,000 with their own grader.
+
+The orchestrators are set in code (`DEFAULT_ORCHESTRATORS` in
+`lib/ffa/dashboard.py`), or with `"orchestrators": ["claude-opus-5-5-medium", …]`
+in `~/.config/opencode-go-watcher/settings.json`, using Artificial Analysis's
+model slugs.
 
 Open it from the OpenCode Go tab in the agents panel — the **Free-model charts
 & eval** button — or directly:
@@ -157,12 +174,6 @@ rule rather than stacking another.
 Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
 — you want `"floating":true` and `"pinned":false`.
 
-| Chart | Blocks | Source |
-|---|---|---|
-| Intelligence | `aa-index` — AA's published index | Artificial Analysis |
-| | `omniscience` — our own run, −100…100 | the eval button |
-| Speed | `aa-speed` — output tokens/second | Artificial Analysis, or self-measured |
-
 A note on contrast, if you restyle it: the panel does not use the theme's
 `muted` token. On a stock theme that is `#707880` on `#101315`, and
 `PanelSectionHeader` paints in `Qt.darker(foreground, 1.4)` — dimmer still — so
@@ -171,42 +182,42 @@ declares one ramp of lifted foregrounds instead and threads it into the rows, so
 secondary text keeps the theme's hue and stays readable. Change the ramp in one
 place rather than per widget.
 
-The two index blocks are deliberately **not** on one axis. AA's index runs 0–70
-and ours runs −100…100; merging them would produce a chart that looks
-authoritative and is not. An **accent-coloured** column is your free model; the neutral ones are paid
-context. A filled column is a published number and an outlined one is a figure
-this plugin measured itself — which is the only reason your free model appears
-at all, since AA publishes nothing for a stealth model.
+The three charts are deliberately **not** on one axis: they are different
+scales. In every row, an **accent** name is a free model, a **bold** one is one
+of your orchestrators and a **dim** one is AA's top models for scale; a filled
+bar is a published number and an outlined one was measured by this plugin.
 
-**The eval is expensive.** A full run is 600 questions × every free model × 2
-LLM calls — about 2,400 calls over 15–25 minutes — and the grader is a *paid*
-model on the same subscription, because a free model cannot be trusted to grade
-itself. The run happens in a detached process, so closing the window or
+**The eval costs nothing.** The free models answer through your Go key (free
+models are unlimited), and the grader is **Big Pickle**, free on OpenCode Zen —
+a free model grading itself would not be a measurement. Zen's free tier only
+serves requests made from OpenCode, so grades go through `opencode run`
+(read-only `plan` agent, empty scratch directory, no plugins), not the HTTP API.
+Big Pickle is rate-limited per day, so a run grades **100** of the 600 public
+questions per free model, spread evenly across all six subject areas: about 400
+calls and 7–10 minutes. The run is a detached process, so closing the window or
 reloading the shell neither kills it nor loses its progress; the window polls a
-state file and shows a live counter. A question limit makes it cheaper:
+state file and shows a live counter. Pass a count to change the size:
 
 ```bash
-~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/opencode-go-watcher-free-for-all-eval start 25
+~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/opencode-go-watcher-free-for-all-eval start 600
 ```
 
 ### Data sources
 
 | What | Where it comes from |
 |---|---|
-| Intelligence | the Artificial Analysis leaderboard |
-| Speed | Artificial Analysis, falling back to a local probe on your own Go key |
+| Paid models: index, Omniscience, speed | artificialanalysis.ai, the public website |
+| Free models: Omniscience | our own run (the Run Omniscience button) |
+| Free models: speed | a local probe on your Go key (the Measure speed button) |
 | Free-model list | the opencode Go catalogue, no key needed |
 
-Without an Artificial Analysis key the window still works — you get the free
-models, a self-measured speed figure and your own Omniscience block — but the
-intelligence chart is empty and the speed chart has nothing to scale against.
-Set `AA_API_KEY`, or put `aaApiKey` in `~/.config/opencode-go-watcher/settings.json`
-(written `0600`), and the AA numbers appear. There is no settings form: that file
-is the whole configuration.
-
-AA's free tier allows 100 requests per 24 h and one snapshot build costs up to
-twelve paginated requests, so the snapshot is cached for six hours. `--force`
-skips the cache, and the Refresh button uses it.
+No Artificial Analysis key is needed. AA's free API returns only composite
+indices and not every effort level, but any model page on their website embeds
+a record for every model they track — each effort level separately — with its
+index, speed and per-evaluation scores. `lib/ffa/aaweb.py` reads those records
+and caches them for a day. It is a page, not an API with a contract, so parsing
+is defensive: if the page can't be read the last good copy is used and the
+window says so. The Refresh button re-reads it.
 
 ### Measuring speed honestly
 
@@ -237,39 +248,16 @@ omarchy plugin add https://github.com/villenull/OpenCodeGoWatcher --enable
 `omarchy plugin update` keeps the checkout current, so there is a single copy on
 disk.
 
-The second command asks for your Artificial Analysis API key, with echo off,
-validates it against the real endpoint, and stores it at `0600` in
-`~/.config/opencode-go-watcher/settings.json`. Skip it and everything still
-works — the speed probe reads the opencode key you already have — but the
-intelligence chart stays empty and the speed chart has nothing to scale against.
-Get a key at <https://artificialanalysis.ai/data-api>; the free tier allows 100
-requests per 24 h.
-
-```
-$ bin/opencode-go-watcher-setup
-
-Artificial Analysis API key
-    Get one at https://artificialanalysis.ai/data-api — the free tier allows
-    100 requests per 24 h, and one snapshot build costs up to twelve.
-    Leave it empty to skip.
-
-  AA API key: ********************************
-
-  Checking…
-  ok  key accepted — valid, 214 models readable
-  ok  saved to /home/you/.config/opencode-go-watcher/settings.json (mode 0600)
-```
-
-Other verbs, all non-interactive:
+The second command checks the setup and changes nothing: your opencode Go key
+(the free models answer with it), the `opencode` CLI and a Zen sign-in (the
+grader runs through them), and whether speed and Omniscience have been run.
+There is nothing to configure.
 
 ```bash
-.../bin/opencode-go-watcher-setup --status        # what is configured; changes nothing
+.../bin/opencode-go-watcher-setup                 # check the setup
 .../bin/opencode-go-watcher-setup --probe-speed    # measure speed now
-.../bin/opencode-go-watcher-setup --clear-aa-key   # forget the key
+.../bin/opencode-go-watcher-setup --clear-aa-key   # remove a key an older version stored
 ```
-
-`--set-aa-key KEY` also exists, but it puts the key in your shell history, so
-prefer the prompt.
 
 The free-model charts window needs no Hyprland config; see
 [*No Hyprland config needed*](#no-hyprland-config-needed).
@@ -412,16 +400,15 @@ $P/bin/opencode-go-watcher-free-for-all-speed
 $P/bin/opencode-go-watcher-free-for-all-speed --model space-bunny-free
 
 # the Omniscience eval
-$P/bin/opencode-go-watcher-free-for-all-eval start        # full run
-$P/bin/opencode-go-watcher-free-for-all-eval start 25     # 25 questions per model
+$P/bin/opencode-go-watcher-free-for-all-eval start        # 100 questions per model
+$P/bin/opencode-go-watcher-free-for-all-eval start 600    # the whole public set
 $P/bin/opencode-go-watcher-free-for-all-eval status       # progress
 $P/bin/opencode-go-watcher-free-for-all-eval cancel       # stop after calls in flight
 ```
 
-`FFA_GRADER_MODEL` overrides the grader. The default is the cheapest model on
-Go over the chat protocol that reliably returns a bare `A`/`B`/`C`/`D`; it is a
-**paid** model on the same subscription, because a free model grading itself is
-not a measurement.
+`FFA_GRADER_MODEL` overrides the grader, as an `opencode run -m` model id. The
+default is `opencode/big-pickle`: free on Zen, and not one of the models being
+graded, because a free model grading itself is not a measurement.
 
 ## When the tab is missing
 

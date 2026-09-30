@@ -77,8 +77,6 @@ def write_settings(patch: dict[str, str]) -> None:
   write_json(settings_path(), {**read_settings(), **patch}, mode=0o600)
 
 
-def aa_api_key() -> str:
-  return read_settings().get("aaApiKey") or os.environ.get("AA_API_KEY", "").strip()
 
 
 def opencode_key() -> tuple[str, str] | None:

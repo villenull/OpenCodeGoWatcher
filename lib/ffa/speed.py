@@ -11,6 +11,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 from . import store
@@ -177,3 +178,25 @@ def probe_speed(model_ids: list[str]) -> list[dict[str, Any]]:
   # Serial on purpose: running every model at once would have them competing for
   # the same subscription quota and each measurement would be wrong.
   return [probe_model(auth[0], model_id) for model_id in model_ids]
+
+
+def save_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+  """Merge a probe's rows into the cache and write it.
+
+  Per model, not per file: probing one model must not wipe the others, which
+  it used to. A failed sample doesn't erase an earlier good measurement either
+  — a buffered response says nothing about the model's speed.
+  """
+  cached = store.read_data("speed")
+  merged: dict[str, dict[str, Any]] = {}
+  if isinstance(cached, dict) and isinstance(cached.get("rows"), list):
+    merged = {row["opencodeId"]: row for row in cached["rows"]
+              if isinstance(row, dict) and isinstance(row.get("opencodeId"), str)}
+  for row in rows:
+    previous = merged.get(row.get("opencodeId"))
+    if row.get("tokensPerSecond") is None and previous and previous.get("tokensPerSecond") is not None:
+      continue
+    merged[row["opencodeId"]] = row
+  payload = {"probedAt": datetime.now(timezone.utc).isoformat(), "rows": list(merged.values())}
+  store.write_data("speed", payload)
+  return payload

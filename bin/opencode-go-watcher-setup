@@ -1,35 +1,30 @@
 #!/usr/bin/python3
-# omarchy:summary=Set up the OpenCode Go Watcher (AA key, status, speed probe)
-# omarchy:args=[--status] [--set-aa-key KEY] [--clear-aa-key] [--probe-speed]
+# omarchy:summary=Check the OpenCode Go Watcher's setup (keys, grader, speed probe)
+# omarchy:args=[--status] [--probe-speed] [--clear-aa-key]
 # omarchy:hidden=true
-"""Interactive setup for the free-model charts.
+"""Setup check for the free-model charts.
 
-Run this after `omarchy plugin add`. The charts work without it — the speed
-probe reads the opencode key you already have — but Artificial Analysis is what
-fills the intelligence chart, and the free tier needs a key:
+Nothing needs configuring. Artificial Analysis figures come from their public
+website, the free models answer with the opencode Go key you already have, and
+the Omniscience grader is Big Pickle on OpenCode Zen, reached through the
+`opencode` CLI because Zen's free tier only serves OpenCode itself. This
+reports whether each of those is in place.
 
-    https://artificialanalysis.ai/data-api
-
-The key is prompted for with echo off, validated against the real endpoint
-before it is written, and stored at 0600 in
-`~/.config/opencode-go-watcher/settings.json`. It is never printed back, never
-logged, and never passed on a command line — `--set-aa-key` exists for scripted
-use but puts the key in your shell history, so prefer the prompt.
+`--clear-aa-key` removes an Artificial Analysis API key stored by an older
+version, which no longer uses it.
 """
 
 from __future__ import annotations
 
 import argparse
-import getpass
-import json
+import shutil
+import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from ffa import aa, opencode, speed, store  # noqa: E402
+from ffa import eval as eval_mod, opencode, speed, store  # noqa: E402
 
 
 def head(text: str) -> None:
@@ -48,53 +43,33 @@ def note(text: str) -> None:
   print(f"    {text}")
 
 
-def check_key(key: str) -> tuple[bool, str]:
-  """Validate against the real endpoint. 429 counts as valid: the key works,
-  the free tier's hourly budget is simply spent."""
-  request = urllib.request.Request(
-    "https://artificialanalysis.ai/api/v2/language/models/free",
-    headers={"x-api-key": key, "accept": "application/json", "user-agent": store.USER_AGENT},
-  )
+def zen_signed_in(opencode_bin: str) -> bool:
   try:
-    with urllib.request.urlopen(request, timeout=30) as response:
-      body = json.load(response)
-  except urllib.error.HTTPError as error:
-    if error.code == 401:
-      return False, "Artificial Analysis rejected the key (401)."
-    if error.code == 403:
-      return False, "That key is not allowed to read the data API (403)."
-    if error.code == 429:
-      return True, "valid, but the free tier's 100 requests/24h are spent right now"
-    return False, f"Artificial Analysis returned HTTP {error.code}."
-  except Exception as error:  # noqa: BLE001
-    return False, f"could not reach Artificial Analysis: {error}"
-
-  rows = body.get("data") if isinstance(body, dict) else None
-  count = len(rows) if isinstance(rows, list) else 0
-  if not count:
-    return False, "the endpoint answered but returned no models — the key may be wrong."
-  return True, f"valid, {count} models readable"
+    listed = subprocess.run([opencode_bin, "auth", "list"], capture_output=True, text=True, timeout=30)
+  except (OSError, subprocess.TimeoutExpired):
+    return False
+  return "OpenCode Zen" in listed.stdout
 
 
 def show_status() -> None:
-  head("Configuration")
+  head("Setup")
 
   auth = store.opencode_key()
   if auth:
     ok(f"opencode Go key — {auth[1]}")
   else:
     bad("no opencode Go key")
-    note("Sign in to opencode (any opencode-go model), or export OPENCODE_API_KEY.")
+    note("The free models answer with it. Run `opencode auth login` and choose OpenCode Go.")
 
-  aa_key = store.aa_api_key()
-  if aa_key:
-    ok("Artificial Analysis key — configured")
-    note("from the watcher settings file" if store.read_settings().get("aaApiKey")
-         else "from AA_API_KEY in the environment")
+  opencode_bin = shutil.which("opencode")
+  if not opencode_bin:
+    bad("the opencode CLI is not on PATH")
+    note("The Omniscience grader runs through it.")
+  elif zen_signed_in(opencode_bin):
+    ok(f"grader — {eval_mod.GRADER_MODEL} via {opencode_bin}")
   else:
-    bad("no Artificial Analysis key")
-    note("Without it the intelligence chart is empty and the speed chart has")
-    note("nothing to scale against. Get one at https://artificialanalysis.ai/data-api")
+    bad("not signed in to OpenCode Zen")
+    note(f"The grader, {eval_mod.GRADER_MODEL}, is free on Zen. Run `opencode auth login` and choose OpenCode Zen.")
 
   speed_cache = store.read_data("speed")
   probed = speed_cache.get("probedAt") if isinstance(speed_cache, dict) else None
@@ -103,63 +78,32 @@ def show_status() -> None:
     measured = [row for row in rows if row.get("tokensPerSecond") is not None]
     ok(f"speed probe — {len(measured)}/{len(rows)} models measured, last {probed[:19].replace('T', ' ')}Z")
   else:
-    bad("speed never probed")
+    bad("speed never measured")
     note("The window's Measure speed button does this on demand.")
 
+  history = store.read_eval_history()
+  if history:
+    ok(f"Omniscience — {len({grade.get('opencodeId') for grade in history})} model(s) graded, "
+       f"last {str(history[0].get('finishedAt', ''))[:19].replace('T', ' ')}Z")
+  else:
+    bad("Omniscience never run")
+    note("The window's Run Omniscience button does this.")
+
+  if store.read_settings().get("aaApiKey"):
+    note("An Artificial Analysis API key from an older version is still stored and")
+    note("no longer used. `--clear-aa-key` removes it.")
+
   head("Where things live")
-  note(f"settings   {store.settings_path()}  (0600)")
+  note(f"settings   {store.settings_path()}")
   note(f"data       {store.data_dir()}")
 
 
-def prompt_for_key() -> int:
-  if not sys.stdin.isatty():
-    bad("no terminal to prompt on")
-    note("Run this from a terminal, or pass --set-aa-key.")
-    return 1
-
-  head("Artificial Analysis API key")
-  note("Get one at https://artificialanalysis.ai/data-api — the free tier allows")
-  note("100 requests per 24 h, and one snapshot build costs up to twelve.")
-  note("Leave it empty to skip.")
-
-  try:
-    key = getpass.getpass("\n  AA API key: ").strip()
-  except (KeyboardInterrupt, EOFError):
-    print()
-    return 1
-
-  if not key:
-    note("Skipped. The charts work without it, minus the intelligence data.")
-    return 0
-
-  print("\n  Checking…")
-  valid, message = check_key(key)
-  if not valid:
-    bad(message)
-    note("Nothing was written.")
-    return 1
-
-  ok(f"key accepted — {message}")
-  store.write_settings({"aaApiKey": key})
-  # 0600, and say so: this file now holds a credential.
-  store.settings_path().chmod(0o600)
-  ok(f"saved to {store.settings_path()} (mode 0600)")
-
-  note("It is never printed back, never logged, and never passed to a subprocess.")
-  return 0
-
-
 def main() -> int:
-  parser = argparse.ArgumentParser(description="Set up the OpenCode Go Watcher")
-  parser.add_argument("--status", action="store_true", help="show what is configured and change nothing")
-  parser.add_argument("--set-aa-key", metavar="KEY", help="set the key non-interactively (leaves shell history)")
-  parser.add_argument("--clear-aa-key", action="store_true", help="remove the stored key")
+  parser = argparse.ArgumentParser(description="Check the OpenCode Go Watcher's setup")
+  parser.add_argument("--status", action="store_true", help="show the setup and change nothing (the default)")
   parser.add_argument("--probe-speed", action="store_true", help="measure output speed now")
+  parser.add_argument("--clear-aa-key", action="store_true", help="remove an unused Artificial Analysis key")
   args = parser.parse_args()
-
-  if args.status:
-    show_status()
-    return 0
 
   if args.clear_aa_key:
     current = store.read_settings()
@@ -169,34 +113,19 @@ def main() -> int:
     current.pop("aaApiKey")
     store.write_settings(current)
     ok("removed the Artificial Analysis key")
-    show_status()
-    return 0
-
-  if args.set_aa_key:
-    valid, message = check_key(args.set_aa_key)
-    if not valid:
-      bad(message)
-      return 1
-    store.write_settings({"aaApiKey": args.set_aa_key})
-    store.settings_path().chmod(0o600)
-    ok(f"key accepted — {message}")
-    show_status()
     return 0
 
   if args.probe_speed:
-    auth = store.opencode_key()
-    if not auth:
+    if not store.opencode_key():
       bad("no opencode Go key, so there is nothing to measure against")
       return 1
     free = opencode.filter_free(opencode.fetch_go_models())
     if not free:
       bad("opencode Go is serving no free models right now")
       return 1
-    head(f"Probing {len(free)} free model(s) — this spends a little Go quota")
+    head(f"Measuring {len(free)} free model(s)")
     rows = speed.probe_speed([model["id"] for model in free])
-    from datetime import datetime, timezone
-    payload = {"probedAt": datetime.now(timezone.utc).isoformat(), "rows": rows}
-    store.write_data("speed", payload)
+    speed.save_rows(rows)
     for row in rows:
       if row.get("tokensPerSecond") is not None:
         note(f"{row['opencodeId']}: {row['tokensPerSecond']} tok/s over ~{row.get('tokens')} tokens")
@@ -204,18 +133,8 @@ def main() -> int:
         bad(f"{row['opencodeId']}: {row.get('error', 'no measurement')}")
     return 0
 
-  if not sys.stdin.isatty():
-    show_status()
-    return 0
-
-  result = prompt_for_key()
   show_status()
-  if result == 0 and store.aa_api_key():
-    head("Next")
-    note("Open the charts with the Free-model charts & eval button in the")
-    note("OpenCode Go tab, or:")
-    note("  omarchy-shell shell summon io.github.villenull.opencode-go-watcher '{}'")
-  return result
+  return 0
 
 
 if __name__ == "__main__":

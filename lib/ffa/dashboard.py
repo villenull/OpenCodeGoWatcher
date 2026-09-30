@@ -14,16 +14,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from . import aa, eval as eval_mod, match, opencode, store
+from . import aaweb, eval as eval_mod, match, opencode, store
 
-# The Go catalogue and the AA leaderboard are cheap, so the window re-pulls them
-# on this cadence. It is also what keeps the free AA tier's 100 requests/24h
-# budget intact: one full build costs up to 12 paginated requests.
+# How long a built snapshot is reused. The AA website data is cached for a day
+# on its own (aaweb); this mostly spares the Go catalogue request.
 CACHE_TTL_SECONDS = 6 * 60 * 60
-
-# How many non-free AA models to show for scale next to the free ones.
-CONTEXT_LIMIT = 10
-
 
 def _now_iso() -> str:
   return datetime.now(timezone.utc).isoformat()
@@ -60,113 +55,30 @@ def build_domain(values: list[float]) -> dict[str, float]:
   return {"min": minimum, "max": maximum, "zero": (0.0 - minimum) / span}
 
 
-# Token abbreviations for the configuration line under a column. Artificial
-# Analysis publishes one entry per effort level, so the parenthetical is mostly
-# these words, and "Adaptive Reasoning, Max Effort, Default Fallback" is too long
-# to sit under a narrow column.
-_CONFIG_TOKENS = (
-  ("adaptive reasoning", "adaptive"),
-  ("default fallback", "fallback"),
-  ("no fallback", "no fallback"),
-)
+_EFFORT = re.compile(r"\b(minimal|low|medium|high|xhigh)\b")
 
 
 def config_label(name: str) -> str:
-  """The unusual settings an AA number was measured at, for the line under a column.
+  """The effort level an AA number was measured at, or "" for maximum effort.
 
-  Maximum effort is dropped rather than shown: `_context_rows` prefers an entry
-  AA labels (max), so "max" is what a reader already assumes, and printing it
-  ten times is what pushes these labels into their neighbours. What is worth the
-  room is the deviation from that default.
-
-  "GPT-6 Astra (max)" -> "" (nothing to add);
-  "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)" ->
-  "adaptive·fallback";
-  "Gemini 3.7 Flash (high)" -> "high".
+  AA publishes one entry per effort level and names it in a parenthetical,
+  e.g. "Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback)"
+  -> "medium". Maximum is what `_top_context` picks and what a reader
+  assumes, so it adds nothing; reasoning mode and fallback are detail the
+  chart has no room for.
   """
   start = name.find(" (")
   end = name.rfind(")")
   if start < 0 or end <= start:
     return ""
-  inner = name[start + 2:end]
-  tokens = []
-  for raw in inner.split(","):
-    # Lowercased throughout so every config line reads the same way, whatever
-    # casing AA used. A size like "3.3B" becomes "3.3b", which is consistent
-    # with "max" and "adaptive" beside it and costs nothing here.
-    token = raw.strip().lower()
-    for long, short in _CONFIG_TOKENS:
-      token = token.replace(long, short)
-    token = re.sub(r"\s+effort\b", "", token)
-    # Strip maximum effort wherever it appears, not just as a whole token, so
-    # "3.3B max" reduces to "3.3b".
-    token = re.sub(r"\bmax\b", "", token).strip(" ,")
-    # Any fallback collapses to "fallback", except an explicit "no fallback",
-    # which is the distinction worth keeping. "Opus 4.8 Fallback" names which
-    # model stood in, which is a detail this line has no room for.
-    if "no fallback" in token:
-      token = "no fallback"
-    elif "fallback" in token:
-      token = "fallback"
-    if token:
-      tokens.append(token)
-  # No spaces around the separator: a column is about 110px wide, and the wider
-  # tokens are 16 characters.
-  return "·".join(tokens)
+  found = _EFFORT.search(name[start + 2:end].lower())
+  return found.group(1) if found else ""
 
 
 def _is_max_effort(name: str) -> bool:
-  """True for an entry AA labels as running at maximum effort."""
-  return "(max)" in name.lower()
-
-
-def _context_rows(
-  catalogue: list[dict[str, Any]],
-  used_slugs: set[str],
-  field: str,
-  scale: str,
-) -> list[dict[str, Any]]:
-  """Top paid models for scale — one row per base model.
-
-  AA's API applies no filter: 684 entries covering 472 base names, 133 of which
-  have several variants, because AA publishes a score per effort level and
-  reasoning configuration. Taking the ten highest entries raw therefore fills
-  half the chart with one model — five rows of Claude Opus 5.5 at three effort
-  settings — which says nothing about where a model sits relative to the rest.
-
-  So one row per base name, preferring the entry AA labels (max) and falling back
-  to the highest when there isn't one. Preferring (max) rather than simply
-  taking the best score keeps the numbers comparable: every column is then a
-  full-effort number, rather than each model being shown at whichever
-  configuration happens to have flattered it most.
-  """
-  best: dict[str, tuple[dict[str, Any], float]] = {}
-  for model in catalogue:
-    if model["slug"] in used_slugs:
-      continue
-    value = model.get(field)
-    if value is None:
-      continue
-    base = short_label(model["name"])
-    current = best.get(base)
-    if current is None:
-      best[base] = (model, float(value))
-      continue
-    challenger_max, current_max = _is_max_effort(model["name"]), _is_max_effort(current[0]["name"])
-    # A (max) entry always beats a non-max one; otherwise the higher score wins.
-    if (challenger_max, float(value)) > (current_max, current[1]):
-      best[base] = (model, float(value))
-
-  ordered = sorted(best.values(), key=lambda pair: -pair[1])[:CONTEXT_LIMIT]
-  return [{
-    "key": f"aa:{model['slug']}",
-    "label": model["name"],
-    "value": value,
-    "source": "aa",
-    "scale": scale,
-    "isFree": False,
-    "aaSlug": model["slug"],
-  } for model, value in ordered]
+  """True for an entry AA runs at maximum effort — "(max)", "Max Effort", or
+  no effort named at all — i.e. whenever there is no lower effort to show."""
+  return config_label(name) == ""
 
 
 def _latest_grades(history: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -176,6 +88,94 @@ def _latest_grades(history: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     if isinstance(model_id, str) and model_id not in latest:
       latest[model_id] = grade
   return latest
+
+
+# The models you orchestrate with, at the effort you run them at. Artificial
+# Analysis publishes one entry per effort level; these are the medium ones.
+# Override with "orchestrators": ["slug", ...] in settings.json.
+DEFAULT_ORCHESTRATORS = (
+  "claude-opus-5-5-medium",
+  "claude-sonnet-5-5-medium",
+  "gpt-6-1-sol-medium",
+  "gpt-6-astra-medium",
+)
+
+# How many of AA's top models to show for scale, besides the orchestrators.
+TOP_CONTEXT = 4
+
+
+def orchestrator_slugs() -> list[str]:
+  settings = store.read_json(store.settings_path())
+  chosen = settings.get("orchestrators") if isinstance(settings, dict) else None
+  if isinstance(chosen, list) and all(isinstance(slug, str) for slug in chosen) and chosen:
+    return chosen
+  return list(DEFAULT_ORCHESTRATORS)
+
+
+def _top_context(models: list[dict[str, Any]], exclude_releases: set[str]) -> list[dict[str, Any]]:
+  """AA's strongest current models, one entry per release, preferring the (max)
+  entry, skipping retired ones and releases already on the chart as an
+  orchestrator."""
+  best: dict[str, dict[str, Any]] = {}
+  for model in models:
+    if (model.get("intelligence") is None or model.get("deprecated")
+        or model["releaseSlug"] in exclude_releases):
+      continue
+    current = best.get(model["releaseSlug"])
+    rank = (_is_max_effort(model["name"]), model["intelligence"])
+    if current is None or rank > (_is_max_effort(current["name"]), current["intelligence"]):
+      best[model["releaseSlug"]] = model
+  return sorted(best.values(), key=lambda model: -model["intelligence"])[:TOP_CONTEXT]
+
+
+def _aa_row(model: dict[str, Any], field: str, scale: str, role: str) -> dict[str, Any] | None:
+  value = model.get(field)
+  if value is None:
+    return None
+  return {
+    "key": f"aa:{model['slug']}",
+    "label": model["name"],
+    "value": round(float(value), 1),
+    "source": "aa",
+    "scale": scale,
+    "isFree": False,
+    "role": role,
+    "aaSlug": model["slug"],
+  }
+
+
+def _block(scale: str, caption: str, unit: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+  rows = sorted(rows, key=lambda row: -(row.get("value") or 0))
+  return {
+    "scale": scale,
+    "caption": caption,
+    "unit": unit,
+    "domain": build_domain([row.get("value") or 0 for row in rows]),
+    "rows": rows,
+  }
+
+
+def _summary(free: list[dict[str, Any]], omni: dict[str, float], speed: dict[str, float],
+             orch_omni: list[float], orch_speed: list[float]) -> list[str]:
+  """One plain line per free model, measured against the orchestrators, plus
+  which free model came out ahead. Directional: our Omniscience run is a
+  100-question sample graded by Big Pickle, AA's is 6,000 with their grader."""
+  lines = []
+  median_speed = sorted(orch_speed)[len(orch_speed) // 2] if orch_speed else None
+  for model in free:
+    parts = []
+    if model["id"] in omni and orch_omni:
+      parts.append(f"Omniscience {omni[model['id']]:.0f} vs your orchestrators' "
+                   f"{min(orch_omni):.0f}–{max(orch_omni):.0f}")
+    if model["id"] in speed and median_speed:
+      parts.append(f"{speed[model['id']] / median_speed:.1f}× their typical speed")
+    if parts:
+      lines.append(f"{model['label']}: " + " · ".join(parts))
+  scored = [model for model in free if model["id"] in omni]
+  if len(scored) > 1:
+    best = max(scored, key=lambda model: omni[model["id"]])
+    lines.append(f"Smarter free model right now: {best['label']}")
+  return lines
 
 
 def build_snapshot(force: bool = False) -> dict[str, Any]:
@@ -189,17 +189,18 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
   warnings: list[str] = []
   free = opencode.filter_free(opencode.fetch_go_models())
 
-  catalogue: list[dict[str, Any]] = []
-  index_version: str | None = None
-  try:
-    result = aa.fetch_aa_catalogue()
-    catalogue = result["models"]
-    index_version = result["indexVersion"]
-    warnings.extend(result["warnings"])
-  except aa.AaAuthError:
-    warnings.append("Artificial Analysis rejected the API key. Check it in Settings.")
-  except Exception as error:  # noqa: BLE001 - a warning, never fatal
-    warnings.append(str(error))
+  aa_result = aaweb.fetch_models(force=force)
+  if aa_result["warning"]:
+    warnings.append(aa_result["warning"])
+  by_slug: dict[str, dict[str, Any]] = aa_result["models"]
+  catalogue = list(by_slug.values())
+
+  orchestrators = [by_slug[slug] for slug in orchestrator_slugs() if slug in by_slug]
+  missing = [slug for slug in orchestrator_slugs() if slug not in by_slug]
+  if missing and by_slug:
+    warnings.append("Artificial Analysis has no entry for: " + ", ".join(missing))
+  context = _top_context(catalogue, {model["releaseSlug"] for model in orchestrators})
+  paid = [(model, "orchestrator") for model in orchestrators] + [(model, "context") for model in context]
 
   speed_cache = store.read_data("speed")
   speed_rows: dict[str, dict[str, Any]] = {}
@@ -207,143 +208,82 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
     speed_rows = {row["opencodeId"]: row for row in speed_cache["rows"]
                   if isinstance(row, dict) and isinstance(row.get("opencodeId"), str)}
   grades = _latest_grades(store.read_eval_history())
-
   matches = {model["id"]: match.match_aa_model(model["id"], catalogue) for model in free}
-  used_slugs = {entry["model"]["slug"] for entry in matches.values() if entry}
 
-  # --- Chart 1: intelligence --------------------------------------------------
-  intelligence_rows: list[dict[str, Any]] = []
-  for model in free:
-    entry = matches.get(model["id"])
-    if entry and entry["model"].get("intelligence") is not None:
-      intelligence_rows.append({
-        "key": f"free:{model['id']}",
-        "label": model["label"],
-        "value": entry["model"]["intelligence"],
-        "source": "aa",
-        "scale": "aa-index",
-        "isFree": True,
-        "opencodeId": model["id"],
-        "aaSlug": entry["model"]["slug"],
-        "note": model.get("note"),
-      })
-  intelligence_rows.extend(_context_rows(catalogue, used_slugs, "intelligence", "aa-index"))
-  intelligence_rows.sort(key=lambda row: -(row.get("value") or 0))
+  def free_row(model: dict[str, Any], key: str, value: float, source: str, scale: str, note: str | None) -> dict[str, Any]:
+    return {"key": key, "label": model["label"], "value": value, "source": source, "scale": scale,
+            "isFree": True, "role": "free", "opencodeId": model["id"], "note": note}
 
-  omniscience_rows: list[dict[str, Any]] = []
+  # --- Smarts: Omniscience, the one test both sides take --------------------
+  omni_rows = [row for model, role in paid if (row := _aa_row(model, "omniscience", "omniscience", role))]
+  free_omni: dict[str, float] = {}
   for model in free:
     grade = grades.get(model["id"])
     if not grade:
       continue
-    # The Omniscience index is -1..1; expressed as points so it reads like the
-    # index AA publishes rather than a bare fraction.
-    omniscience_rows.append({
-      "key": f"omni:{model['id']}",
-      "label": model["label"],
-      "value": round(float(grade.get("index", 0)) * 100, 1),
-      "source": "self",
-      "scale": "omniscience",
-      "isFree": True,
-      "opencodeId": model["id"],
-      "note": (f"accuracy {round(float(grade.get('accuracy', 0)) * 100)}%"
-               f" · hallucination {round(float(grade.get('hallucinationRate', 0)) * 100)}%"
-               f" · {grade.get('total')} questions"),
-    })
-  omniscience_rows.sort(key=lambda row: -(row.get("value") or 0))
+    # Our index is -1..1; as points it reads on AA's -100..100 scale.
+    value = round(float(grade.get("index", 0)) * 100, 1)
+    free_omni[model["id"]] = value
+    omni_rows.append(free_row(model, f"omni:{model['id']}", value, "self", "omniscience",
+                              f"our run · {grade.get('total')} questions · "
+                              f"accuracy {round(float(grade.get('accuracy', 0)) * 100)}%"
+                              + (f" · {grade['skipped']} unanswered, left out" if grade.get("skipped") else "")))
 
-  # --- Chart 2: speed ---------------------------------------------------------
-  speed_aa_rows: list[dict[str, Any]] = []
-  speed_self_rows: list[dict[str, Any]] = []
+  # --- Smarts: AA's overall index, for context --------------------------------
+  index_rows = [row for model, role in paid if (row := _aa_row(model, "intelligence", "aa-index", role))]
+  for model in free:
+    entry = matches.get(model["id"])
+    if entry and entry["model"].get("intelligence") is not None:
+      index_rows.append(free_row(model, f"free:{model['id']}", round(entry["model"]["intelligence"], 1),
+                                 "aa", "aa-index", model.get("note")))
+
+  # --- Speed --------------------------------------------------------------------
+  speed_block_rows = [row for model, role in paid if (row := _aa_row(model, "tokensPerSecond", "aa-speed", role))]
+  free_speed: dict[str, float] = {}
   for model in free:
     entry = matches.get(model["id"])
     if entry and entry["model"].get("tokensPerSecond") is not None:
-      speed_aa_rows.append({
-        "key": f"free:{model['id']}",
-        "label": model["label"],
-        "value": round(entry["model"]["tokensPerSecond"]),
-        "source": "aa",
-        "scale": "aa-speed",
-        "isFree": True,
-        "opencodeId": model["id"],
-        "aaSlug": entry["model"]["slug"],
-        "note": model.get("note"),
-      })
+      value = round(entry["model"]["tokensPerSecond"])
+      speed_block_rows.append(free_row(model, f"free:{model['id']}", value, "aa", "aa-speed", model.get("note")))
+    elif (probed := speed_rows.get(model["id"])) and probed.get("tokensPerSecond") is not None:
+      value = probed["tokensPerSecond"]
+      speed_block_rows.append(free_row(model, f"self:{model['id']}", value, "self", "aa-speed",
+                                       f"self-measured · ~{probed.get('tokens') or '?'} output tokens"))
+    else:
       continue
-    probed = speed_rows.get(model["id"])
-    if probed and probed.get("tokensPerSecond") is not None:
-      speed_self_rows.append({
-        "key": f"self:{model['id']}",
-        "label": model["label"],
-        "value": probed["tokensPerSecond"],
-        "source": "self",
-        "scale": "aa-speed",
-        "isFree": True,
-        "opencodeId": model["id"],
-        "note": f"self-measured · ~{probed.get('tokens') or '?'} output tokens",
-      })
-  speed_combined = sorted(
-    [*speed_aa_rows, *speed_self_rows, *_context_rows(catalogue, used_slugs, "tokensPerSecond", "aa-speed")],
-    key=lambda row: -(row.get("value") or 0),
-  )
-
-  unmatched = [
-    model["id"] for model in free
-    if not matches.get(model["id"])
-    and not (speed_rows.get(model["id"]) or {}).get("tokensPerSecond")
-    and not grades.get(model["id"])
-  ]
+    free_speed[model["id"]] = float(value)
 
   if not free:
     warnings.append("opencode Go is serving no free models right now.")
 
-  intelligence_blocks = [{
-    "scale": "aa-index",
-    "caption": "Artificial Analysis Intelligence Index",
-    "unit": "index · higher is better",
-    "domain": build_domain([row.get("value") or 0 for row in intelligence_rows]),
-    "rows": intelligence_rows,
-  }]
-  if omniscience_rows:
-    intelligence_blocks.append({
-      "scale": "omniscience",
-      "caption": "Our run · AA-Omniscience (public 600q)",
-      "unit": "index −100…100 · higher is better",
-      "domain": build_domain([row.get("value") or 0 for row in omniscience_rows]),
-      "rows": omniscience_rows,
-    })
-
+  intelligence_blocks = [
+    _block("omniscience", "AA-Omniscience", "−100…100 · higher is better", omni_rows),
+    _block("aa-index", "AA Intelligence Index", "higher is better", index_rows),
+  ]
   snapshot = {
     "fetchedAt": _now_iso(),
     "freeModels": free,
     "rows": {
       "intelligence": intelligence_blocks,
-      "speed": [{
-        "scale": "aa-speed",
-        "caption": "Output speed",
-        "unit": "output tokens/second · higher is better",
-        "domain": build_domain([row.get("value") or 0 for row in speed_combined]),
-        "rows": speed_combined,
-      }],
+      "speed": [_block("aa-speed", "Output speed", "tokens/second · higher is better", speed_block_rows)],
     },
-    "unmatched": unmatched,
+    "summary": _summary(free, free_omni, free_speed,
+                        [model["omniscience"] for model in orchestrators if model.get("omniscience") is not None],
+                        [model["tokensPerSecond"] for model in orchestrators if model.get("tokensPerSecond") is not None]),
+    "unmatched": [model["id"] for model in free if model["id"] not in free_omni and model["id"] not in free_speed],
     "warnings": warnings,
     "speedProbedAt": speed_cache.get("probedAt") if isinstance(speed_cache, dict) else None,
     "eval": eval_mod.read_state(),
-    # Which free models still have no result from an operation only we can
-    # perform. The panel rings the matching button red while these are
-    # non-empty, so it needs per-model coverage rather than just a timestamp:
-    # a probe that measured one of two free models has still not been run for
-    # the other. Deliberately no AA entry — every number on that chart comes
-    # from Artificial Analysis's own API and is never missing, so there is
-    # nothing for the user to have failed to do.
+    # Free models with no result yet from an operation only we can run; the
+    # window rings the matching button red while these are non-empty.
     "pending": {
       "intelligence": [model["id"] for model in free if model["id"] not in grades],
       "speed": [model["id"] for model in free if model["id"] not in speed_rows],
     },
     "aa": {
-      "configured": bool(store.aa_api_key()),
+      "source": "artificialanalysis.ai",
       "modelCount": len(catalogue),
-      "indexVersion": index_version,
+      "fetchedAt": aa_result["fetchedAt"],
     },
   }
 

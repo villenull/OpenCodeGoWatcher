@@ -14,10 +14,13 @@ Ported from server/eval.ts, with two corrections:
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
 import sys
+import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -27,12 +30,20 @@ from typing import Any
 from . import complete as complete_mod
 from . import omniscience, opencode, store
 
-CONCURRENCY = 8
+CONCURRENCY = 4
 ANSWER_MAX_TOKENS = 300
 
-# A free model cannot be trusted to grade itself, so grading is a separate paid
-# model on the same subscription. Override with FFA_GRADER_MODEL.
-GRADER_MODEL = os.environ.get("FFA_GRADER_MODEL", "mimo-v2.6-flash")
+# A free model cannot be trusted to grade itself, so grading is Big Pickle on
+# OpenCode Zen: free, but rate-limited per day, and Zen's free tier only
+# answers requests made from OpenCode itself — so grades go through the
+# `opencode` CLI rather than the HTTP API. Override with FFA_GRADER_MODEL
+# (an `opencode run -m` model id).
+GRADER_MODEL = os.environ.get("FFA_GRADER_MODEL", "opencode/big-pickle")
+GRADER_TIMEOUT = 180
+
+# A run grades DEFAULT_QUESTIONS of the 600 public questions per free model,
+# which keeps it inside Big Pickle's daily allowance. `start 600` runs them all.
+DEFAULT_QUESTIONS = 100
 
 IDLE_STATE: dict[str, Any] = {
   "running": False,
@@ -105,19 +116,93 @@ class _Cancelled(RuntimeError):
   pass
 
 
-def _run_question(api_key: str, model: str, item: dict[str, Any]) -> str:
-  if cancel_requested():
-    raise _Cancelled("cancelled")
-  prediction = complete_mod.complete(api_key, model, omniscience.answer_prompt(item), ANSWER_MAX_TOKENS)
+def sample_questions(questions: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+  """An even stride through the set rather than its first N, so a short run
+  still covers every domain instead of just the first few."""
+  if not limit or limit >= len(questions):
+    return questions
+  step = len(questions) / limit
+  return [questions[int(index * step)] for index in range(limit)]
+
+
+def _opencode_bin() -> str:
+  # The panel's process may not have mise's shims on PATH.
+  return shutil.which("opencode") or str(Path.home() / ".local" / "share" / "mise" / "shims" / "opencode")
+
+
+def grade(prompt: str) -> str:
+  """One verdict from the grader, via `opencode run`.
+
+  Read-only agent, empty scratch directory, no plugins: the grader only has to
+  read the prompt, and nothing in a question should be able to make it touch
+  files or run commands.
+  """
+  with tempfile.TemporaryDirectory(prefix="ogw-grade-") as scratch:
+    result = subprocess.run(
+      [_opencode_bin(), "run", "--pure", "--agent", "plan", "--format", "json", "-m", GRADER_MODEL, prompt],
+      cwd=scratch, capture_output=True, text=True, timeout=GRADER_TIMEOUT, stdin=subprocess.DEVNULL,
+    )
+  text = []
+  for line in result.stdout.splitlines():
+    try:
+      event = json.loads(line)
+    except ValueError:
+      continue
+    part = event.get("part") if isinstance(event, dict) else None
+    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+      text.append(part["text"])
+  if not text:
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    raise RuntimeError(f"{GRADER_MODEL} gave no verdict" + (f": {detail[-1][:160]}" if detail else ""))
+  return "".join(text)
+
+
+RETRIES = 2
+
+
+def _with_retries(call):
+  """A slow or dropped request is common on free models; retry it before
+  giving up, with a short pause between attempts."""
+  for attempt in range(RETRIES + 1):
+    if cancel_requested():
+      raise _Cancelled("cancelled")
+    try:
+      return call()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+      if attempt == RETRIES:
+        raise
+      time.sleep(2 * (attempt + 1))
+  raise AssertionError("unreachable")
+
+
+def _run_question(api_key: str, model: str, item: dict[str, Any]) -> str | None:
+  """A grade, or None when the model never answered — that question is left
+  out of the score rather than failing the whole model. A grader that keeps
+  failing (Big Pickle's daily limit, say) still raises: nothing can be graded."""
+  try:
+    prediction = _with_retries(
+      lambda: complete_mod.complete(api_key, model, omniscience.answer_prompt(item), ANSWER_MAX_TOKENS))
+  except (RuntimeError, OSError):
+    return None
   # An empty response is an explicit refusal in this benchmark, not a parse
   # failure, so it never reaches the grader.
   if not prediction.strip():
     return "D"
-  verdict = complete_mod.complete(api_key, GRADER_MODEL, omniscience.grader_prompt(item, prediction), 8)
-  return omniscience.parse_grade(verdict)
+  return omniscience.parse_grade(_with_retries(lambda: grade(omniscience.grader_prompt(item, prediction))))
 
 
-def run(limit: int | None = None) -> dict[str, Any]:
+def _chosen(free_models: list[dict[str, Any]], models: list[str] | None) -> list[dict[str, Any]]:
+  """The free models to grade: all of them, or the ones named."""
+  if models:
+    free_models = [model for model in free_models if model["id"] in models]
+    if not free_models:
+      raise RuntimeError("None of those models is free on opencode Go right now: " + ", ".join(models))
+  if not free_models:
+    raise RuntimeError("No free models in the opencode Go catalogue right now.")
+  return free_models
+
+
+def run(limit: int | None = None, models: list[str] | None = None) -> dict[str, Any]:
   clear_cancel()
 
   auth = store.opencode_key()
@@ -125,12 +210,9 @@ def run(limit: int | None = None) -> dict[str, Any]:
     raise RuntimeError("No opencode API key found. Sign in to opencode, or set OPENCODE_API_KEY.")
   api_key = auth[0]
 
-  free_models = opencode.filter_free(opencode.fetch_go_models())
-  if not free_models:
-    raise RuntimeError("No free models in the opencode Go catalogue right now.")
+  free_models = _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
 
-  all_questions = omniscience.fetch_questions()
-  questions = all_questions[:limit] if limit else all_questions
+  questions = sample_questions(omniscience.fetch_questions(), limit or DEFAULT_QUESTIONS)
   run_id = "run-" + format(int(time.time()), "x")
   total = len(questions) * len(free_models)
 
@@ -142,7 +224,7 @@ def run(limit: int | None = None) -> dict[str, Any]:
     "currentQuestion": 0,
     "totalQuestions": total,
     "startedAt": now_iso(),
-    "message": f"Grading with {GRADER_MODEL}",
+    "message": f"Grading with {GRADER_MODEL.split('/')[-1]}",
     "pid": os.getpid(),
   }
   write_state(state)
@@ -163,9 +245,16 @@ def run(limit: int | None = None) -> dict[str, Any]:
       # One worker thread per question, capped: each is two blocking HTTP calls,
       # so this is I/O concurrency and threads are the right tool.
       with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        grades = list(pool.map(lambda item: _run_question(api_key, free["id"], item), questions))
+        def graded(item: dict[str, Any], model_id: str = free["id"]) -> str | None:
+          verdict = _run_question(api_key, model_id, item)
+          bump()
+          return verdict
+        grades = list(pool.map(graded, questions))
 
-      scores = omniscience.score_grades(grades)
+      graded_only = [verdict for verdict in grades if verdict is not None]
+      if not graded_only:
+        raise RuntimeError(f"{free['label']} answered none of the questions.")
+      scores = omniscience.score_grades(graded_only)
       store.push_eval_history({
         "opencodeId": free["id"],
         "index": round(scores["index"], 4),
@@ -173,6 +262,7 @@ def run(limit: int | None = None) -> dict[str, Any]:
         "hallucinationRate": round(scores["hallucinationRate"], 4),
         "answered": scores["answered"],
         "total": scores["total"],
+        "skipped": len(grades) - len(graded_only),
         "finishedAt": now_iso(),
       })
 
@@ -195,10 +285,10 @@ def run(limit: int | None = None) -> dict[str, Any]:
   return read_state()
 
 
-def start(limit: int | None = None) -> dict[str, Any]:
+def start(limit: int | None = None, models: list[str] | None = None) -> dict[str, Any]:
   """Validate, then hand the run to a detached process.
 
-  A full run is 2,400 LLM calls over 15-25 minutes. It cannot be a child of the
+  A default run is 400 LLM calls over several minutes. It cannot be a child of the
   panel's process: a shell reload, a panel close, or a plugin restart would kill
   it mid-flight, and there is no progress to show.
   """
@@ -210,12 +300,9 @@ def start(limit: int | None = None) -> dict[str, Any]:
   if not auth:
     raise RuntimeError("No opencode API key found. Sign in to opencode, or set OPENCODE_API_KEY.")
 
-  free_models = opencode.filter_free(opencode.fetch_go_models())
-  if not free_models:
-    raise RuntimeError("No free models in the opencode Go catalogue right now.")
+  free_models = _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
 
-  all_questions = omniscience.fetch_questions()
-  questions = all_questions[:limit] if limit else all_questions
+  questions = sample_questions(omniscience.fetch_questions(), limit or DEFAULT_QUESTIONS)
   total = len(questions) * len(free_models)
   run_id = "run-" + format(int(time.time()), "x")
 
@@ -235,6 +322,8 @@ def start(limit: int | None = None) -> dict[str, Any]:
   runner = plugin_root / "bin" / "opencode-go-watcher-free-for-all-eval"
   log_path = store.data_dir() / "eval.log"
   args = [str(runner), "run"] + ([str(limit)] if limit else [])
+  for model_id in models or []:
+    args += ["--model", model_id]
 
   with open(log_path, "ab", buffering=0) as log:
     process = subprocess.Popen(
