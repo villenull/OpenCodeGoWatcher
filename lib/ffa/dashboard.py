@@ -28,6 +28,26 @@ def _now_iso() -> str:
   return datetime.now(timezone.utc).isoformat()
 
 
+def short_label(name: str) -> str:
+  """A model name with AA's configuration parenthetical removed.
+
+  Artificial Analysis names entries like
+  "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)". Under a
+  vertical column that is mostly parenthetical, and the parenthetical is config
+  metadata rather than a different model family — so it is dropped *for display
+  only*. The full name stays on the row as `label`, because the effort variants
+  genuinely are separate AA entries and merging them in the data would be wrong.
+  """
+  index = name.find(" (")
+  return name[:index] if index > 0 else name
+
+
+def _add_short_labels(blocks: list[dict[str, Any]]) -> None:
+  for block in blocks:
+    for row in block.get("rows") or []:
+      row["shortLabel"] = short_label(str(row.get("label") or ""))
+
+
 def build_domain(values: list[float]) -> dict[str, float]:
   """Always clamps min <= 0 <= max, so a bar can extend left of zero on the
   diverging Omniscience scale. `zero` is that line as a 0..1 fraction of the
@@ -231,6 +251,9 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
       "indexVersion": index_version,
     },
   }
+
+  _add_short_labels(snapshot["rows"]["intelligence"])
+  _add_short_labels(snapshot["rows"]["speed"])
 
   store.write_data("snapshot", {"at": time.time(), "snapshot": snapshot})
   return snapshot

@@ -128,6 +128,17 @@ Item {
   // PanelSectionHeader goes darker still. Secondary text here is a *lifted*
   // foreground instead: same hue as the theme, but readable. Colour.muted is
   // kept for the one thing that genuinely wants to recede: nothing.
+  // The card, with the theme's hue but no alpha.
+  //
+  // Color.popups.background carries the theme's background alpha, which is right
+  // for a bar-anchored popup over a busy desktop and wrong here: this window is
+  // a full-height surface with columns and gaps between them, and at any alpha
+  // the text of whatever is behind reads straight through the chart as ghosting.
+  // A chart you read numbers off has to be opaque.
+  readonly property color cardSurface: Qt.rgba(Color.popups.background.r,
+                                              Color.popups.background.g,
+                                              Color.popups.background.b, 1)
+
   readonly property color textStrong: Color.foreground
   readonly property color textSoft: Qt.darker(Color.foreground, 1.3)
   readonly property color textFaint: Qt.darker(Color.foreground, 1.5)
@@ -164,7 +175,7 @@ Item {
     title: "OpenCode Go free models"
     // popups.background, not background: the raw background token carries the
     // theme's background alpha, and a panel drawn in it is see-through.
-    color: Color.popups.background
+    color: root.cardSurface
     implicitWidth: root.boxW
     implicitHeight: root.boxH
     minimumSize: Qt.size(root.boxW, root.boxH)
@@ -412,7 +423,7 @@ Item {
             Text {
               width: parent.width
               wrapMode: Text.Wrap
-              text: "filled = Artificial Analysis · outlined = measured by this plugin · FREE marks a Go free model"
+              text: "accent = your free model · filled = Artificial Analysis · outlined = measured by this plugin"
               color: root.textFaint
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall

@@ -185,6 +185,17 @@ check("the awkward case is preserved", True,
 
 # ------------------------------------------------------------- dashboard.py
 
+section("dashboard: labels for a column chart")
+check("AA's config parenthetical is trimmed", "Claude Opus 5.5",
+      dashboard.short_label("Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)"))
+check("a short parenthetical goes too", "GPT-6 Astra", dashboard.short_label("GPT-6 Astra (max)"))
+check("a name with no parenthetical is untouched", "Celeris-1", dashboard.short_label("Celeris-1"))
+check("only the first parenthetical is cut", "Gemini 2.5 Flash-Lite",
+      dashboard.short_label("Gemini 2.5 Flash-Lite (Reasoning) (v2)"))
+check("an unterminated parenthetical is still trimmed", "Weird", dashboard.short_label("Weird (unclosed"))
+check("a leading space is not mistaken for one", " Weird", dashboard.short_label(" Weird (x)"))
+check("an empty name is empty", "", dashboard.short_label(""))
+
 section("dashboard: axis domains")
 flat = dashboard.build_domain([10.0, 20.0, 30.0])
 check("a positive-only domain still includes zero", 0.0, flat["min"])

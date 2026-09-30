@@ -132,6 +132,7 @@ o.window({ class = "^org\\.quickshell$", title = "^OpenCode Go free models$" }, 
   size = { 1180, 1010 },
   pin = true,
   tag = "-default-opacity",
+  opacity = "1 1",
 })
 ```
 
@@ -149,9 +150,9 @@ Then reload Hyprland. Each option earns its place:
 | `center` | open in the middle rather than wherever the compositor drops a new toplevel |
 | `size` | the window surface *is* the card, so this is the card's size; the QML falls back to the same numbers. Sized so the header, the free-model list, both ten-row charts, the warnings and the attribution all fit without scrolling — a comparison view you have to scroll is a comparison view you cannot make |
 | `pin` | without it the window opens on whichever workspace the shell process is on, which is not necessarily yours, and it looks like nothing happened |
-| `tag` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`; a chart is not a wallpaper, and at that alpha the window behind stays legible through the bars |
+| `tag`, `opacity` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`. Removing the tag alone does nothing — omarchy's own `qemu` rule pairs the removal with an explicit `opacity = "1 1"`, and so must this. A chart is not a wallpaper: at that alpha the text of whatever is behind reads through the columns and the gaps between them, and looks like ghosting in the plot |
 
-Three traps, all of which cost a round trip here.
+Four traps, all of which cost a round trip here.
 
 The match is on the **class** when you pass a string, and the class here is
 `org.quickshell` — which is every Quickshell toplevel including omarchy's own —
@@ -165,6 +166,12 @@ And do not add an animation field. `no_anim` belongs to `hl.layer_rule`;
 `hl.window_rule` rejects it and takes the **whole config** down with
 `Your config has errors: … unknown field 'no_anim'`. Omarchy's window rules have
 no animation option at all.
+
+The last one is the subtle one. The surface colour is already opaque, so forcing
+its alpha to 1 changes nothing — the see-through is the *compositor* applying
+0.96 to the window, and it is invisible until a text-heavy window happens to
+sit behind the chart. It then reads as ghosting inside the plot rather than as a
+translucent panel, which sends you looking for a layout bug that is not there.
 
 Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
 — you want `"floating":true` and `"pinned":true`.
@@ -185,8 +192,10 @@ place rather than per widget.
 
 The two index blocks are deliberately **not** on one axis. AA's index runs 0–70
 and ours runs −100…100; merging them would produce a chart that looks
-authoritative and is not. A filled bar is a published number, an outlined bar is
-one this plugin measured, and a `FREE ·` prefix marks a Go free model.
+authoritative and is not. An **accent-coloured** column is your free model; the neutral ones are paid
+context. A filled column is a published number and an outlined one is a figure
+this plugin measured itself — which is the only reason your free model appears
+at all, since AA publishes nothing for a stealth model.
 
 **The eval is expensive.** A full run is 600 questions × every free model × 2
 LLM calls — about 2,400 calls over 15–25 minutes — and the grader is a *paid*

@@ -2,32 +2,48 @@ import QtQuick
 import qs.Commons
 import "."
 
-// One chart block: a caption, its unit, and the bars.
+// One chart block: a caption, its unit, and a column chart.
 //
 // `rows.intelligence` and `rows.speed` are lists of these rather than single
 // blocks, because AA's Intelligence Index runs 0-70 while our own Omniscience
 // run runs -100..100. Merging them onto one axis would produce a chart that
 // looks authoritative and is not.
+//
+// Columns rather than bars, with the free models tinted: a free model is one
+// column among ten context rows, and a `FREE` prefix on a narrow label under a
+// column is not something you can read at a glance.
 Column {
   id: root
 
   property var block: ({})
   property bool showZero: false
 
-  // See FreeForAllRow: the window owns the contrast ramp for the whole panel.
+  // The window owns the contrast ramp for the whole panel. A component reaching
+  // for the theme's muted token on its own is how this chart ended up
+  // unreadable the first time.
   property color textStrong: Color.foreground
   property color textSoft: Color.foreground
+  // Neutral fill for the paid context rows, so the accent-tinted free model is
+  // the thing your eye lands on. The raw foreground token is far too loud for a
+  // large filled area.
+  property color trackColor: Qt.darker(Color.foreground, 1.5)
+  property color valueColor: Color.foreground
   property color accentColor: Color.accent
 
-  property real labelWidth: 300
-  property real valueWidth: 62
+  property real plotHeight: 210
+  // The tallest column tops out below the plot edge, leaving room for its value
+  // label. Without this the leading value is drawn over the unit line, and on
+  // the speed chart it disappears entirely.
+  readonly property real headroom: 0.86
+  property real columnGap: Style.space(4)
+  property real barWidth: 54
+  property real labelHeight: 46
 
   spacing: Style.space(3)
 
   // Not PanelSectionHeader: that component paints in
-  // Qt.darker(foreground, 1.4), which is dimmer than the muted grey the notes
-  // used to be in, so the section titles were the least legible text in the
-  // window. This is a chart heading, not a panel section label.
+  // Qt.darker(foreground, 1.4), which is dimmer than the notes under it, so the
+  // headings were the least legible text in the window.
   Text {
     width: parent.width
     text: root.block && root.block.caption ? root.block.caption : ""
@@ -44,12 +60,9 @@ Column {
     color: root.textSoft
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
-    bottomPadding: Style.space(2)
   }
 
-  // A block with no rows is the empty state, not a zero-height strip: the
-  // original rendered a blank card, which read as "broken" rather than
-  // "nothing measured yet".
+  // A block with no rows is the empty state, not a zero-height strip.
   Text {
     visible: !root.hasRows
     width: parent.width
@@ -58,30 +71,149 @@ Column {
     color: root.textSoft
     font.family: Style.font.family
     font.pixelSize: Style.font.body
+    topPadding: Style.space(8)
+  }
+
+  readonly property var rows: (root.block && root.block.rows) ? root.block.rows : []
+  readonly property bool hasRows: rows.length > 0
+  readonly property var domain: (root.block && root.block.domain) ? root.block.domain : ({ min: 0, max: 1, zero: 0 })
+
+  readonly property real span: (Number(root.domain.max || 1) - Number(root.domain.min || 0)) || 1
+  readonly property bool diverging: Number(root.domain.min || 0) < 0
+
+  // Where the value-0 line sits, as a 0..1 fraction of the plot height. On a
+  // zero-based block that is the floor; on the Omniscience block it is above
+  // it, and negative columns hang below that rule.
+  readonly property real zeroY: root.diverging
+    ? root.plotHeight * (1 - Math.max(0, Math.min(1, Number(root.domain.zero || 0))))
+    : root.plotHeight
+
+  readonly property real columnWidth: root.hasRows
+    ? Math.max(48, Math.min(112, Math.floor((root.width - root.columnGap * (rows.length - 1)) / rows.length)))
+    : root.width
+
+  visible: hasRows
+
+  // The plot: every column in one row of a fixed-height strip, so the zero rule
+  // can be drawn once across the whole thing.
+  Item {
+    id: plot
+    width: parent.width
+    height: root.plotHeight + root.labelHeight
+    visible: root.hasRows
+
+    // Value-0 rule. On a zero-based block this is the axis every column stands
+    // on; on the diverging one it is a line through the middle.
+    Rectangle {
+      x: 0
+      y: root.zeroY
+      width: parent.width
+      height: 1
+      color: Qt.alpha(root.trackColor, 0.5)
+    }
+
+    Row {
+      id: columns
+      x: 0
+      y: 0
+      spacing: root.columnGap
+
+      Repeater {
+        model: root.rows
+
+        Item {
+          id: column
+          width: root.columnWidth
+          height: root.plotHeight + root.labelHeight
+
+          readonly property real value: {
+            var raw = modelData && modelData.value !== null && modelData.value !== undefined ? Number(modelData.value) : 0
+            return isFinite(raw) ? raw : 0
+          }
+          // Clamped to the domain so a value outside it cannot draw outside the
+          // plot, and floored at zero height so a null value is an empty column
+          // rather than a hairline.
+          readonly property real magnitude: Math.max(0,
+            Math.min(root.span, value - Number(root.domain.min || 0)))
+          readonly property real columnHeight: (magnitude / root.span) * root.plotHeight * root.headroom
+          readonly property bool isFree: modelData && modelData.isFree === true
+          readonly property bool isSelf: modelData && modelData.source === "self"
+          readonly property color tint: isFree ? root.accentColor : root.trackColor
+
+          // The column itself.
+          Rectangle {
+            id: bar
+            width: Math.min(root.barWidth, column.width)
+            height: column.columnHeight
+            x: (column.width - width) / 2
+            // Positive values grow up from the zero rule, negative hang below it.
+            y: column.value >= 0 ? root.zeroY - height : root.zeroY
+            radius: Style.cornerRadius
+            // Outlined = measured by us. Filled = published by Artificial
+            // Analysis. The free model is distinguished by the tint of both the
+            // column and its label, not by a prefix on a narrow label.
+            color: column.isSelf ? "transparent" : column.tint
+            border.width: column.isSelf ? 1 : 0
+            border.color: column.tint
+          }
+
+          // Value, sitting on the column's own tip rather than in a fixed band
+          // at the top of the plot, so it tracks the height.
+          Text {
+            width: column.width
+            horizontalAlignment: Text.AlignHCenter
+            y: column.value >= 0
+              ? Math.max(0, bar.y - implicitHeight - Style.space(3))
+              : Math.min(root.plotHeight - implicitHeight, bar.y + bar.height + Style.space(3))
+            text: {
+              if (!modelData || modelData.value === null || modelData.value === undefined) return "—"
+              var value = Number(modelData.value)
+              if (!isFinite(value)) return "—"
+              return root.block && root.block.scale === "aa-speed" ? String(Math.round(value)) : value.toFixed(1)
+            }
+            color: column.isFree ? root.accentColor : root.valueColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+
+          // Label under the axis. `shortLabel` has already had AA's
+          // configuration parenthetical removed server-side; the full name is
+          // still in the record, and is the tooltip.
+          Text {
+            width: column.width
+            y: root.plotHeight + Style.space(6)
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+            text: modelData ? (modelData.shortLabel || modelData.label || "") : ""
+            color: column.isFree ? root.accentColor : root.textSoft
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            font.bold: column.isFree
+          }
+        }
+      }
+    }
+  }
+
+  // Source note, under the chart rather than per column: only one row in each
+  // chart is self-measured, and repeating a sentence ten times helps nobody.
+  Text {
+    width: parent.width
+    visible: root.hasSelfRow
+    text: "outlined = measured by this plugin"
+    color: root.textSoft
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
     topPadding: Style.space(2)
   }
 
-  readonly property bool hasRows: root.block && root.block.rows && root.block.rows.length > 0
-
-  Column {
-    width: parent.width
-    spacing: Style.space(5)
-
-    Repeater {
-      model: root.hasRows ? root.block.rows : []
-
-      FreeForAllRow {
-        width: root.width
-        row: modelData
-        domain: root.block ? root.block.domain : ({ min: 0, max: 1, zero: 0 })
-        scale: root.block ? root.block.scale : ""
-        showZero: root.showZero
-        labelWidth: root.labelWidth
-        valueWidth: root.valueWidth
-        textStrong: root.textStrong
-        textSoft: root.textSoft
-        accentColor: root.accentColor
-      }
+  readonly property bool hasSelfRow: {
+    for (var i = 0; i < root.rows.length; i++) {
+      if (root.rows[i] && root.rows[i].source === "self") return true
     }
+    return false
   }
 }
