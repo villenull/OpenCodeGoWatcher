@@ -205,45 +205,25 @@ Item {
           spacing: Style.space(14)
 
           // ------------------------------------------------------------ hero
-          // The buttons sit in their own right-aligned row rather than in
-          // PanelHero's `trailingControl`: the hero is given no icon here, and
-          // with an empty icon slot the trailing loader had nothing to measure
-          // against and pushed the row past the window's right edge.
-          Row {
+          // Title only. The actions used to sit to the right of this, vertically
+          // centred against it, which left them floating above the thing they
+          // act on: both of them change the free models, and the free models
+          // are the list below. They moved down to the "Free today" line, which
+          // is the first line of the thing they operate on.
+          //
+          // Not PanelHero's `trailingControl` either: the hero is given no icon
+          // here, and with an empty icon slot the trailing loader had nothing to
+          // measure against and pushed its contents past the window edge.
+          PanelHero {
+            id: hero
             width: parent.width
-            spacing: Style.space(12)
-
-            PanelHero {
-              id: hero
-              width: parent.width - actionRow.width - Style.space(12)
-              title: "Free models"
-              // No count here: the list directly below says which models are
-              // free, so "2 free" above the list is a number you have to
-              // cross-check against something you can already see.
-              meta: root.aaConfigured
-                    ? "Artificial Analysis · " + ((root.snapshot.aa && root.snapshot.aa.modelCount) || 0) + " models"
-                    : "no Artificial Analysis key"
-            }
-
-            Row {
-              id: actionRow
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(8)
-
-              Button {
-                text: root.evalState.running ? "Cancel" : "Run eval"
-                bordered: true
-                enabled: !evalAction.running
-                onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
-              }
-              Button {
-                text: "Refresh"
-                bordered: true
-                enabled: !root.building
-                onClicked: root.refresh(true)
-              }
-
-            }
+            title: "Free models"
+            // No count here: the list directly below says which models are
+            // free, so "2 free" above the list is a number you have to
+            // cross-check against something you can already see.
+            meta: root.aaConfigured
+                  ? "Artificial Analysis · " + ((root.snapshot.aa && root.snapshot.aa.modelCount) || 0) + " models"
+                  : "no Artificial Analysis key"
           }
 
           // --------------------------------------------------------- progress
@@ -314,13 +294,43 @@ Item {
             width: parent.width
             spacing: Style.space(4)
 
-            Text {
+            // The actions live on this line, top-aligned with the heading and
+            // pushed to the right edge, so the buttons sit beside the first line
+            // of the list they change rather than floating above it in the hero.
+            Item {
               width: parent.width
-              text: "Free today"
-              color: root.textStrong
-              font.family: Style.font.family
-              font.pixelSize: Style.font.subtitle
-              font.bold: true
+              height: Math.max(freeTodayTitle.implicitHeight, actionRow.implicitHeight)
+
+              Text {
+                id: freeTodayTitle
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Free today"
+                color: root.textStrong
+                font.family: Style.font.family
+                font.pixelSize: Style.font.subtitle
+                font.bold: true
+              }
+
+              Row {
+                id: actionRow
+                anchors.right: parent.right
+                anchors.top: parent.top
+                spacing: Style.space(8)
+
+                Button {
+                  text: root.evalState.running ? "Cancel" : "Benchmark free models"
+                  bordered: true
+                  enabled: !evalAction.running
+                  onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
+                }
+                Button {
+                  text: "Refresh AA benchmarks"
+                  bordered: true
+                  enabled: !root.building
+                  onClicked: root.refresh(true)
+                }
+              }
             }
 
             Text {
