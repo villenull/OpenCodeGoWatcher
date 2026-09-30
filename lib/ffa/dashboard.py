@@ -329,6 +329,17 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
     "warnings": warnings,
     "speedProbedAt": speed_cache.get("probedAt") if isinstance(speed_cache, dict) else None,
     "eval": eval_mod.read_state(),
+    # Which free models still have no result from an operation only we can
+    # perform. The panel rings the matching button red while these are
+    # non-empty, so it needs per-model coverage rather than just a timestamp:
+    # a probe that measured one of two free models has still not been run for
+    # the other. Deliberately no AA entry — every number on that chart comes
+    # from Artificial Analysis's own API and is never missing, so there is
+    # nothing for the user to have failed to do.
+    "pending": {
+      "intelligence": [model["id"] for model in free if model["id"] not in grades],
+      "speed": [model["id"] for model in free if model["id"] not in speed_rows],
+    },
     "aa": {
       "configured": bool(store.aa_api_key()),
       "modelCount": len(catalogue),

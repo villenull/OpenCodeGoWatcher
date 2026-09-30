@@ -193,6 +193,60 @@ check("the weakest models are among those dropped", True, {"m7", "m8"} <= droppe
 check("and so are the effort levels the dedupe removed", True, {"opus-xhigh", "opus-high"} <= dropped)
 
 
+section("dashboard: one row per base model")
+VARIANTS = [
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)", "slug": "opus-max", "intelligence": 57.6, "tokensPerSecond": 61.0},
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback)", "slug": "opus-xhigh", "intelligence": 56.0, "tokensPerSecond": 55.0},
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback)", "slug": "opus-high", "intelligence": 53.6, "tokensPerSecond": 50.0},
+  {"name": "GPT-6 Astra (max)", "slug": "astra-max", "intelligence": 52.7, "tokensPerSecond": 76.0},
+  {"name": "GPT-6 Astra (xhigh)", "slug": "astra-xhigh", "intelligence": 52.4, "tokensPerSecond": 70.0},
+  {"name": "Celeris-1", "slug": "celeris-1", "intelligence": 50.0, "tokensPerSecond": 120.0},
+]
+def context(catalogue, field="intelligence", used=frozenset()):
+  """Rows as the snapshot actually emits them, display fields included."""
+  rows = dashboard._context_rows(catalogue, set(used), field, f"aa-{field}")
+  dashboard._add_short_labels([{"rows": rows}])
+  return rows
+
+rows = context(VARIANTS)
+check("three Opuses collapse to one row", 3, len(rows))
+check("and so do two Atras", 3, len({dashboard.short_label(r["label"]) for r in rows}))
+check("the winner is the max-effort entry", "opus-max", rows[0]["aaSlug"])
+check("a plain name is its own base", "celeris-1", [r for r in rows if r["aaSlug"] == "celeris-1"][0]["aaSlug"])
+check("each row carries its own config", "adaptive\u00b7fallback", rows[0]["configLabel"])
+
+section("dashboard: preferring max beats a higher raw score")
+# A model with no (max) entry still gets its best, and a model whose only entry
+# is a non-max effort keeps it rather than being dropped.
+MIXED = [
+  {"name": "Ranger 2 (high)", "slug": "ranger-high", "intelligence": 40.0, "tokensPerSecond": 30.0},
+  {"name": "Ranger 2 (medium)", "slug": "ranger-medium", "intelligence": 36.0, "tokensPerSecond": 28.0},
+  {"name": "Pike 3 (medium)", "slug": "pike-medium", "intelligence": 44.0, "tokensPerSecond": 60.0},
+]
+mixed = context(MIXED)
+check("without a max, the best score is kept", "ranger-high", mixed[1]["aaSlug"])
+check("and it is kept even when it is not max", "high", mixed[1]["configLabel"])
+check("a lone non-max model is not dropped", "pike-medium", mixed[0]["aaSlug"])
+
+section("dashboard: dedup respects the other filters")
+check("a used model is still excluded", 2, len(context(
+  VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "astra-max"})))
+check("excluding the max re-admits its sibling", ["astra-xhigh"],
+      [r["aaSlug"] for r in context(
+        VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "celeris-1", "astra-max"})])
+check("a missing value is skipped", 0, len(context([{"name": "Blank (max)", "slug": "blank", "intelligence": None}])))
+check("speed dedups the same way", 3, len(context(VARIANTS, field="tokensPerSecond")))
+many = VARIANTS + [
+  {"name": f"Model {n} (max)", "slug": f"m{n}", "intelligence": float(40 - n), "tokensPerSecond": 10.0}
+  for n in range(9)
+]
+check("the cap applies across distinct base models", 10, len(context(many)))
+check("the cap keeps the highest, in order", [57.6, 52.7, 50.0], [r["value"] for r in context(many)[:3]])
+dropped = {m["slug"] for m in many if m["slug"] not in {r["aaSlug"] for r in context(many)}}
+check("the weakest models are among those dropped", True, {"m7", "m8"} <= dropped)
+check("and so are the effort levels the dedupe removed", True, {"opus-xhigh", "opus-high"} <= dropped)
+
+
 # ----------------------------------------------------------- omniscience.py
 
 section("omniscience: grading")
@@ -351,6 +405,42 @@ check("context rows are not marked free", False, crowded["rows"]["speed"][0]["ro
 check("rows are sorted descending", True,
       all(crowded["rows"]["speed"][0]["rows"][i]["value"] >= crowded["rows"]["speed"][0]["rows"][i + 1]["value"]
           for i in range(len(crowded["rows"]["speed"][0]["rows"]) - 1)))
+
+
+
+section("dashboard: which operations still owe us a result")
+# The buttons in the window's Benchmark box are ringed red while any free model
+# has no result from the operation behind that button. Coverage is per model, not
+# per timestamp: measuring one of two free models has still not measured the other.
+
+never = build_with(FREE, [])
+check("with nothing run, every free model owes an intelligence score",
+      ["space-bunny-free", "longcat-2.5-preview-free"], never["pending"]["intelligence"])
+check("and a speed measurement", ["space-bunny-free", "longcat-2.5-preview-free"], never["pending"]["speed"])
+check("AA is never flagged, because we never run it", False, "aa" in never["pending"])
+
+half = build_with(
+  FREE, [],
+  grades=[{"opencodeId": "space-bunny-free", "index": 0.1, "accuracy": 0.5,
+           "hallucinationRate": 0.5, "answered": 300, "total": 600}],
+  speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 475, "tokens": 561}],
+)
+check("one model graded leaves only the other pending",
+      ["longcat-2.5-preview-free"], half["pending"]["intelligence"])
+check("one model probed leaves only the other pending",
+      ["longcat-2.5-preview-free"], half["pending"]["speed"])
+
+done = build_with(
+  FREE, [],
+  grades=[{"opencodeId": model["id"], "index": 0.1, "accuracy": 0.5,
+           "hallucinationRate": 0.5, "answered": 300, "total": 600} for model in FREE],
+  speed_rows=[{"opencodeId": model["id"], "tokensPerSecond": 400, "tokens": 500} for model in FREE],
+)
+check("once every model has a grade nothing is pending", [], done["pending"]["intelligence"])
+check("and likewise for speed", [], done["pending"]["speed"])
+
+check("with no free models nothing is pending", {"intelligence": [], "speed": []},
+      build_with([], [])["pending"])
 
 
 # ------------------------------------------------------------------ eval.py

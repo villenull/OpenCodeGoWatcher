@@ -137,6 +137,17 @@ Item {
   readonly property var freeModels: (snapshot && snapshot.freeModels) ? snapshot.freeModels : []
   readonly property var warnings: (snapshot && snapshot.warnings) ? snapshot.warnings : []
 
+  // Which of the three operations in the Benchmark box still owe us a result for
+  // at least one free model. The snapshot computes this per model rather than
+  // from a timestamp: a probe that measured one of two free models has still not
+  // measured the other. Deliberately nothing for AA — every number on that chart
+  // comes from Artificial Analysis and is never missing, so there is nothing the
+  // user could have failed to run.
+  readonly property var pendingIntelligence: (snapshot && snapshot.pending) ? snapshot.pending.intelligence : null
+  readonly property var pendingSpeed: (snapshot && snapshot.pending) ? snapshot.pending.speed : null
+  readonly property bool intelligencePending: pendingIntelligence !== null && pendingIntelligence.length > 0
+  readonly property bool speedPending: pendingSpeed !== null && pendingSpeed.length > 0
+
   readonly property real progress: (evalState && typeof evalState.progress === "number") ? evalState.progress : 0
   readonly property int currentQuestion: (evalState && typeof evalState.currentQuestion === "number") ? evalState.currentQuestion : 0
   readonly property int totalQuestions: (evalState && typeof evalState.totalQuestions === "number") ? evalState.totalQuestions : 0
@@ -309,41 +320,99 @@ Item {
             width: parent.width
             spacing: Style.space(4)
 
-            // The actions live on this line, top-aligned with the heading and
-            // pushed to the right edge, so the buttons sit beside the first line
-            // of the list they change rather than floating above it in the hero.
-            Item {
+            // The heading is a plain Text in the Column now. It used to sit in an
+            // Item whose height was the max of the heading and the action row to
+            // its right, so the two were baseline-aligned; the actions are the
+            // Benchmark box below now, and leaving that wrapper in place made its
+            // height a NaN and silently collapsed the heading to nothing.
+            Text {
+              id: freeTodayTitle
               width: parent.width
-              height: Math.max(freeTodayTitle.implicitHeight, actionRow.implicitHeight)
+              text: "Free today"
+              color: root.textStrong
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            // The three operations that produce the two charts, as one group.
+            // They were previously split: the eval and the AA refresh sat in the
+            // header, and Measure speed sat in its own row under the model list
+            // with a "probed <timestamp>" caption. They are one box because the
+            // caption is gone and the red ring now carries the only per-operation
+            // state worth showing.
+            Row {
+              id: benchmarkRow
+              width: parent.width
+              spacing: Style.space(10)
 
               Text {
-                id: freeTodayTitle
-                anchors.left: parent.left
-                anchors.top: parent.top
-                text: "Free today"
+                id: benchmarkLabel
+                text: "Benchmark"
                 color: root.textStrong
                 font.family: Style.font.family
                 font.pixelSize: Style.font.subtitle
                 font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
               }
 
-              Row {
-                id: actionRow
-                anchors.right: parent.right
-                anchors.top: parent.top
-                spacing: Style.space(8)
+              Rectangle {
+                id: benchmarkBox
+                anchors.verticalCenter: parent.verticalCenter
+                width: benchmarkButtons.width + Style.space(20)
+                height: benchmarkButtons.height + Style.space(12)
+                color: "transparent"
+                radius: Style.cornerRadius
+                border.width: 1
+                border.color: root.textFaint
 
-                Button {
-                  text: root.evalState.running ? "Cancel" : "Benchmark free models"
-                  bordered: true
-                  enabled: !evalAction.running
-                  onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
-                }
-                Button {
-                  text: "Refresh AA benchmarks"
-                  bordered: true
-                  enabled: !root.building
-                  onClicked: root.refresh(true)
+                Row {
+                  id: benchmarkButtons
+                  anchors.centerIn: parent
+                  spacing: Style.space(8)
+
+                  Button {
+                    id: aaButton
+                    text: root.building ? "Refreshing…" : "AA"
+                    bordered: true
+                    enabled: !root.building
+                    onClicked: root.refresh(true)
+                  }
+
+                  Button {
+                    id: intelligenceButton
+                    text: root.evalState.running ? "Cancel" : "Intelligence"
+                    bordered: true
+                    enabled: !evalAction.running
+                    onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
+                    // A red ring while any free model still has no grade from us.
+                    // The button still works — it is a "not done yet" cue, not a
+                    // disabled state.
+                    Rectangle {
+                      anchors.fill: parent
+                      radius: Style.cornerRadius
+                      color: "transparent"
+                      border.width: 1
+                      border.color: root.textUrgent
+                      visible: root.intelligencePending
+                    }
+                  }
+
+                  Button {
+                    id: speedButton
+                    text: speedAction.running ? "Probing…" : "Speed"
+                    bordered: true
+                    enabled: !speedAction.running
+                    onClicked: root.measureSpeed()
+                    Rectangle {
+                      anchors.fill: parent
+                      radius: Style.cornerRadius
+                      color: "transparent"
+                      border.width: 1
+                      border.color: root.textUrgent
+                      visible: root.speedPending
+                    }
+                  }
                 }
               }
             }
@@ -360,57 +429,14 @@ Item {
 
             Repeater {
               model: root.freeModels
-              Row {
-                width: content.width
-                spacing: Style.space(10)
-
-                Text {
-                  width: 220
-                  text: modelData.label
-                  color: root.textAccent
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                  elide: Text.ElideRight
-                }
-                Text {
-                  width: 210
-                  text: modelData.id
-                  color: root.textFaint
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
-                }
-                Text {
-                  width: parent.width - 220 - 210 - Style.space(20)
-                  text: modelData.note || ""
-                  color: root.textSoft
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
-                }
-              }
-            }
-
-            Row {
-              width: content.width
-              spacing: Style.space(10)
-              topPadding: Style.space(2)
-
-              Button {
-                text: speedAction.running ? "Probing…" : "Measure speed"
-                bordered: true
-                enabled: !speedAction.running
-                onClicked: root.measureSpeed()
-              }
               Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: (root.snapshot && root.snapshot.speedProbedAt)
-                      ? "probed " + String(root.snapshot.speedProbedAt).slice(0, 19).replace("T", " ") + "Z"
-                      : "never probed"
-                color: root.textSoft
+                width: content.width
+                text: modelData.label
+                color: root.textAccent
                 font.family: Style.font.family
-                font.pixelSize: Style.font.bodySmall
+                font.pixelSize: Style.font.body
+                font.bold: true
+                elide: Text.ElideRight
               }
             }
           }
