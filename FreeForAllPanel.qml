@@ -121,6 +121,19 @@ Item {
   readonly property int currentQuestion: (evalState && typeof evalState.currentQuestion === "number") ? evalState.currentQuestion : 0
   readonly property int totalQuestions: (evalState && typeof evalState.totalQuestions === "number") ? evalState.totalQuestions : 0
 
+  // Contrast ramp for the whole panel, in one place.
+  //
+  // The theme's own muted token is #707880 on a #101315 panel, which is legible
+  // but not comfortably so when you are reading numbers off a bar, and
+  // PanelSectionHeader goes darker still. Secondary text here is a *lifted*
+  // foreground instead: same hue as the theme, but readable. Colour.muted is
+  // kept for the one thing that genuinely wants to recede: nothing.
+  readonly property color textStrong: Color.foreground
+  readonly property color textSoft: Qt.darker(Color.foreground, 1.3)
+  readonly property color textFaint: Qt.darker(Color.foreground, 1.5)
+  readonly property color textAccent: Color.accent
+  readonly property color textUrgent: Color.urgent
+
   readonly property var screenInfo: (typeof Quickshell !== "undefined" && Quickshell.screens && Quickshell.screens.length > 0) ? Quickshell.screens[0] : null
   readonly property int screenW: screenInfo ? screenInfo.width : 1920
   readonly property int screenH: screenInfo ? screenInfo.height : 1080
@@ -128,8 +141,12 @@ Item {
   // Must agree with the `size` in the Hyprland window rule. The rule wins when
   // it is present; these are the fallback for when it is not, and the clamp
   // keeps the window inside a small screen.
-  readonly property int boxW: Math.min(900, screenW - Style.space(80))
-  readonly property int boxH: Math.min(960, screenH - Style.space(80))
+  //
+  // Sized so the header, the free-model list, both ten-row charts, the warnings
+  // and the attribution all fit at once: the whole point of a comparison view is
+  // being able to see both charts together, and scrolling defeats that.
+  readonly property int boxW: Math.min(1180, screenW - Style.space(80))
+  readonly property int boxH: Math.min(1010, screenH - Style.space(80))
   // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
   // centred windows are FloatingWindows: they are real toplevels, so Hyprland
   // makes one the active window and SUPER + W — which is
@@ -200,10 +217,12 @@ Item {
               id: hero
               width: parent.width - actionRow.width - Style.space(12)
               title: "Free models"
+              // No count here: the list directly below says which models are
+              // free, so "2 free" above the list is a number you have to
+              // cross-check against something you can already see.
               meta: root.aaConfigured
                     ? "Artificial Analysis · " + ((root.snapshot.aa && root.snapshot.aa.modelCount) || 0) + " models"
                     : "no Artificial Analysis key"
-              detail: "opencode Go · " + (root.freeModels.length || 0) + " free"
             }
 
             Row {
@@ -223,11 +242,7 @@ Item {
                 enabled: !root.building
                 onClicked: root.refresh(true)
               }
-              Button {
-                text: "Close"
-                bordered: true
-                onClicked: root.requestClose()
-              }
+
             }
           }
 
@@ -242,7 +257,7 @@ Item {
               wrapMode: Text.Wrap
               text: (root.evalState.running && root.evalState.message) ? root.evalState.message
                     : (root.evalState.error ? root.evalState.error : (root.evalState.message || ""))
-              color: root.evalState.running ? Color.accent : Color.muted
+              color: root.evalState.running ? root.textAccent : root.textSoft
               font.family: Style.font.family
               font.pixelSize: Style.font.body
             }
@@ -254,7 +269,7 @@ Item {
               visible: root.evalState.running === true
               color: "transparent"
               border.width: 1
-              border.color: Qt.alpha(Color.muted, 0.35)
+              border.color: Qt.alpha(root.textSoft, 0.4)
 
               Rectangle {
                 width: parent.width * Math.max(0, Math.min(1, root.progress))
@@ -268,9 +283,9 @@ Item {
               width: parent.width
               visible: (root.evalState.running && root.totalQuestions > 0) ? true : false
               text: Math.round(root.progress * 100) + "% · " + root.currentQuestion + "/" + root.totalQuestions + " graded"
-              color: Color.accent
+              color: root.textAccent
               font.family: Style.font.family
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
@@ -279,7 +294,7 @@ Item {
             wrapMode: Text.Wrap
             visible: root.loadError ? true : false
             text: root.loadError || ""
-            color: Color.urgent
+            color: root.textUrgent
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
@@ -289,46 +304,64 @@ Item {
             wrapMode: Text.Wrap
             visible: root.actionError ? true : false
             text: root.actionError || ""
-            color: Color.muted
+            color: root.textSoft
             font.family: Style.font.family
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.bodySmall
           }
 
           // ----------------------------------------------------- free models
           Column {
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(4)
 
-            PanelSectionHeader { width: parent.width; text: "Free today" }
+            Text {
+              width: parent.width
+              text: "Free today"
+              color: root.textStrong
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
 
             Text {
               width: parent.width
               wrapMode: Text.Wrap
               visible: root.freeModels.length === 0
               text: "opencode Go is serving no free models right now."
-              color: Color.muted
+              color: root.textSoft
               font.family: Style.font.family
               font.pixelSize: Style.font.body
             }
 
             Repeater {
               model: root.freeModels
-              Column {
+              Row {
                 width: content.width
-                spacing: Style.space(1)
+                spacing: Style.space(10)
+
                 Text {
-                  width: parent.width
+                  width: 220
                   text: modelData.label
-                  color: Color.foreground
+                  color: root.textAccent
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
+                  font.bold: true
+                  elide: Text.ElideRight
                 }
                 Text {
-                  width: parent.width
-                  text: modelData.id + (modelData.note ? "  ·  " + modelData.note : "")
-                  color: Color.muted
+                  width: 210
+                  text: modelData.id
+                  color: root.textFaint
                   font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Style.font.bodySmall
+                  elide: Text.ElideRight
+                }
+                Text {
+                  width: parent.width - 220 - 210 - Style.space(20)
+                  text: modelData.note || ""
+                  color: root.textSoft
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
                   elide: Text.ElideRight
                 }
               }
@@ -336,7 +369,9 @@ Item {
 
             Row {
               width: content.width
-              spacing: Style.space(8)
+              spacing: Style.space(10)
+              topPadding: Style.space(2)
+
               Button {
                 text: speedAction.running ? "Probing…" : "Measure speed"
                 bordered: true
@@ -348,9 +383,9 @@ Item {
                 text: (root.snapshot && root.snapshot.speedProbedAt)
                       ? "probed " + String(root.snapshot.speedProbedAt).slice(0, 19).replace("T", " ") + "Z"
                       : "never probed"
-                color: Color.muted
+                color: root.textSoft
                 font.family: Style.font.family
-                font.pixelSize: Style.font.caption
+                font.pixelSize: Style.font.bodySmall
               }
             }
           }
@@ -368,9 +403,9 @@ Item {
               width: parent.width
               wrapMode: Text.Wrap
               text: "filled = Artificial Analysis · outlined = measured by this plugin · FREE marks a Go free model"
-              color: Color.muted
+              color: root.textFaint
               font.family: Style.font.family
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.font.bodySmall
             }
 
             Repeater {
@@ -410,9 +445,9 @@ Item {
               width: content.width
               wrapMode: Text.Wrap
               text: "⚠ " + modelData
-              color: Color.muted
+              color: root.textFaint
               font.family: Style.font.family
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
@@ -423,9 +458,9 @@ Item {
             width: parent.width
             wrapMode: Text.Wrap
             text: "Leaderboard and speed figures from Artificial Analysis."
-            color: Color.muted
+            color: root.textSoft
             font.family: Style.font.family
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.bodySmall
           }
 
           Item { width: 1; height: Style.space(20) }

@@ -108,9 +108,11 @@ The trade is that a `FloatingWindow` fills the screen, so the window is
 transparent and the card is centred inside it — the same trade omarchy's own dev
 gallery makes with 3416x1390 of toplevel around a 720px panel.
 
-Three ways to close it: `SUPER + W`, `Escape`, or the **Close** button. The
-button is there because the other two depend on the window having focus, and a
-window the user has just summoned may not have it yet.
+Two ways to close it: `SUPER + W` and `Escape`. There is no Close button — the
+window is a normal toplevel, so the desktop's own close binding is the right one
+and a second control in the corner is noise. `Escape` is the fallback for when
+the window has not been focused yet, which a freshly summoned window may not
+have been.
 
 ### One line of Hyprland config, and why the plugin cannot do it
 
@@ -127,7 +129,7 @@ Create `~/.config/hypr/apps.lua`:
 o.window({ class = "^org\\.quickshell$", title = "^OpenCode Go free models$" }, {
   float = true,
   center = true,
-  size = { 900, 960 },
+  size = { 1180, 1010 },
   pin = true,
   tag = "-default-opacity",
 })
@@ -145,7 +147,7 @@ Then reload Hyprland. Each option earns its place:
 |---|---|
 | `float` | the overlay behaviour — does not interact with the tiled windows |
 | `center` | open in the middle rather than wherever the compositor drops a new toplevel |
-| `size` | the window surface *is* the card, so this is the card's size; the QML falls back to the same numbers |
+| `size` | the window surface *is* the card, so this is the card's size; the QML falls back to the same numbers. Sized so the header, the free-model list, both ten-row charts, the warnings and the attribution all fit without scrolling — a comparison view you have to scroll is a comparison view you cannot make |
 | `pin` | without it the window opens on whichever workspace the shell process is on, which is not necessarily yours, and it looks like nothing happened |
 | `tag` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`; a chart is not a wallpaper, and at that alpha the window behind stays legible through the bars |
 
@@ -172,6 +174,14 @@ Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
 | Intelligence | `aa-index` — AA's published index | Artificial Analysis |
 | | `omniscience` — our own run, −100…100 | the eval button |
 | Speed | `aa-speed` — output tokens/second | Artificial Analysis, or self-measured |
+
+A note on contrast, if you restyle it: the panel does not use the theme's
+`muted` token. On a stock theme that is `#707880` on `#101315`, and
+`PanelSectionHeader` paints in `Qt.darker(foreground, 1.4)` — dimmer still — so
+a chart built from those reads as decorative rather than numeric. The window
+declares one ramp of lifted foregrounds instead and threads it into the rows, so
+secondary text keeps the theme's hue and stays readable. Change the ramp in one
+place rather than per widget.
 
 The two index blocks are deliberately **not** on one axis. AA's index runs 0–70
 and ours runs −100…100; merging them would produce a chart that looks

@@ -17,9 +17,19 @@ Item {
   property var domain: ({ min: 0, max: 1, zero: 0 })
   property string scale: ""
   property bool showZero: false
-  property real trackHeight: 22
-  property real labelWidth: 190
+
+  // Passed in rather than read from the theme: the window owns the contrast
+  // ramp for the whole panel, and a row that reached for Color.muted on its own
+  // would drift back to the unreadable grey.
+  property color textStrong: Color.foreground
+  property color textSoft: Color.foreground
+  property color accentColor: Color.accent
+
+  property real trackHeight: 18
+  property real labelWidth: 300
+  property real valueWidth: 62
   property real barGap: Style.space(10)
+  property real rowGap: Style.space(5)
 
   readonly property real value: {
     var raw = root.row && root.row.value !== null && root.row.value !== undefined ? Number(root.row.value) : 0
@@ -38,7 +48,7 @@ Item {
   readonly property bool isSelf: root.row && root.row.source === "self"
   readonly property bool isFree: root.row && root.row.isFree === true
 
-  implicitHeight: label.implicitHeight + (root.row && root.row.note ? note.implicitHeight + Style.space(2) : 0) + Style.space(8)
+  implicitHeight: Math.max(label.implicitHeight, root.trackHeight) + (root.row && root.row.note ? note.implicitHeight + Style.space(2) : 0) + root.rowGap
 
   Text {
     id: label
@@ -49,9 +59,10 @@ Item {
       // models against paid context rows the distinction is the whole point.
       return (root.isFree ? "FREE · " : "") + (root.row.label || "")
     }
-    color: root.isFree ? Color.accent : Color.muted
+    color: root.isFree ? root.accentColor : root.textSoft
     font.family: Style.font.family
     font.pixelSize: Style.font.body
+    font.bold: root.isFree
     elide: Text.ElideRight
   }
 
@@ -63,13 +74,12 @@ Item {
     anchors.rightMargin: root.barGap
     height: root.trackHeight
 
-    // The zero rule, drawn once per block by ChartBlock; here only the extent.
     Rectangle {
       anchors.fill: parent
       radius: Style.cornerRadius
       color: "transparent"
       border.width: 1
-      border.color: Qt.alpha(Color.muted, 0.35)
+      border.color: Qt.alpha(root.textSoft, 0.45)
     }
 
     Rectangle {
@@ -79,9 +89,9 @@ Item {
       width: Math.max(2, parent.width * root.widthFraction)
       radius: Style.cornerRadius
       // Outlined = measured by us. Filled = published by Artificial Analysis.
-      color: root.isSelf ? "transparent" : Color.accent
+      color: root.isSelf ? "transparent" : root.accentColor
       border.width: root.isSelf ? 1 : 0
-      border.color: Color.accent
+      border.color: root.accentColor
     }
   }
 
@@ -89,7 +99,7 @@ Item {
     id: valueLabel
     anchors.right: parent.right
     anchors.verticalCenter: track.verticalCenter
-    width: Style.space(64)
+    width: root.valueWidth
     horizontalAlignment: Text.AlignRight
     text: {
       if (!root.row || root.row.value === null || root.row.value === undefined) return "—"
@@ -99,9 +109,10 @@ Item {
       // scales are read to one decimal.
       return root.scale === "aa-speed" ? String(Math.round(value)) : value.toFixed(1)
     }
-    color: root.row && root.row.value !== null && root.row.value !== undefined ? Color.foreground : Color.muted
+    color: root.textStrong
     font.family: Style.font.family
     font.pixelSize: Style.font.body
+    font.bold: true
   }
 
   Text {
@@ -112,11 +123,10 @@ Item {
     anchors.top: track.bottom
     anchors.topMargin: Style.space(2)
     text: root.row && root.row.note ? root.row.note : ""
-    color: Color.muted
+    color: root.textSoft
     font.family: Style.font.family
-    font.pixelSize: Style.font.caption
+    font.pixelSize: Style.font.bodySmall
     elide: Text.ElideRight
-    maximumLineCount: 2
-    wrapMode: Text.Wrap
+    maximumLineCount: 1
   }
 }
