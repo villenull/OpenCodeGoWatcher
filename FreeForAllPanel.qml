@@ -188,7 +188,11 @@ Item {
   // and the attribution all fit at once: the whole point of a comparison view is
   // being able to see both charts together, and scrolling defeats that.
   readonly property int boxW: Math.min(1180, screenW - Style.space(80))
-  readonly property int boxH: Math.min(1010, screenH - Style.space(80))
+  // 800, not 1010: the content measures 752px with the header on two rows, so
+  // the old height left 239px of empty card below the last line. Anything that
+  // grows past this — an eval in flight, more free models — scrolls, which the
+  // ScrollView already handles.
+  readonly property int boxH: Math.min(800, screenH - Style.space(80))
   // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
   // centred windows are FloatingWindows: they are real toplevels, so Hyprland
   // makes one the active window and SUPER + W — which is
@@ -328,7 +332,7 @@ Item {
             Text {
               id: freeTodayTitle
               width: parent.width
-              text: "Free today"
+              text: "What's Free for all?"
               color: root.textStrong
               font.family: Style.font.family
               font.pixelSize: Style.font.subtitle
@@ -341,9 +345,22 @@ Item {
             // with a "probed <timestamp>" caption. They are one box because the
             // caption is gone and the red ring now carries the only per-operation
             // state worth showing.
+            // Benchmark on the left, the names it produces on the right. This
+            // was three stacked rows — heading, buttons, names — for about 90px of
+            // header. An Item rather than a Row because both sides need to be
+            // centred on one another, and a Row sizes its children to their own
+            // implicit heights, so a child cannot anchor to the Row's centre
+            // without a binding loop.
+            Item {
+              id: headerRow
+              width: parent.width
+              readonly property real nameGap: Style.space(24)
+              height: Math.max(benchmarkRow.implicitHeight, namesColumn.implicitHeight)
+
             Row {
               id: benchmarkRow
-              width: parent.width
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(10)
 
               Text {
@@ -417,26 +434,37 @@ Item {
               }
             }
 
-            Text {
-              width: parent.width
-              wrapMode: Text.Wrap
-              visible: root.freeModels.length === 0
-              text: "opencode Go is serving no free models right now."
-              color: root.textSoft
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
 
-            Repeater {
-              model: root.freeModels
-              Text {
-                width: content.width
-                text: modelData.label
-                color: root.textAccent
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.bold: true
-                elide: Text.ElideRight
+              Column {
+                id: namesColumn
+                anchors.left: benchmarkRow.right
+                anchors.leftMargin: headerRow.nameGap
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - headerRow.nameGap - benchmarkRow.width
+                spacing: Style.space(2)
+
+                Text {
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  visible: root.freeModels.length === 0
+                  text: "opencode Go is serving no free models right now."
+                  color: root.textSoft
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+
+                Repeater {
+                  model: root.freeModels
+                  Text {
+                    width: parent.width
+                    text: modelData.label
+                    color: root.textAccent
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    elide: Text.ElideRight
+                  }
+                }
               }
             }
           }
