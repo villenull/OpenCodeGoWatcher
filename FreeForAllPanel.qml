@@ -49,6 +49,27 @@ Item {
     closingFromHost = false
   }
 
+  // The panel owns an IPC target of its own rather than being summoned through
+  // the shell.
+  //
+  // `omarchy-shell shell summon <id>` sets the shell's openPanelIds and delivers
+  // the payload through the plugin's Loader. Close this window with SUPER + W and
+  // the compositor destroys the surface, which tears the Loader down; the next
+  // summon then queues a payload nobody delivers, and the button does nothing at
+  // all until the shell is reloaded. That is the bug this replaces.
+  //
+  // `keepLoaded` in the manifest keeps the panel component mounted whatever the
+  // shell's registry thinks, so this handler is always live and `open` is
+  // idempotent — it can only ever open, never toggle shut.
+  IpcHandler {
+    target: "opencode-go-watcher.charts"
+    function open(): void { root.open("") }
+    function close(): void { root.close() }
+    function toggle(): void { root.evalState && root.windowVisible ? root.close() : root.open("") }
+  }
+
+  readonly property bool windowVisible: window.visible
+
   function requestClose() {
     if (shell && typeof shell.hide === "function") shell.hide("io.github.villenull.opencode-go-watcher")
     else window.visible = false
@@ -115,7 +136,6 @@ Item {
   readonly property var speedBlocks: (snapshot && snapshot.rows && snapshot.rows.speed) ? snapshot.rows.speed : []
   readonly property var freeModels: (snapshot && snapshot.freeModels) ? snapshot.freeModels : []
   readonly property var warnings: (snapshot && snapshot.warnings) ? snapshot.warnings : []
-  readonly property bool aaConfigured: !!(snapshot && snapshot.aa && snapshot.aa.configured)
 
   readonly property real progress: (evalState && typeof evalState.progress === "number") ? evalState.progress : 0
   readonly property int currentQuestion: (evalState && typeof evalState.currentQuestion === "number") ? evalState.currentQuestion : 0
@@ -215,27 +235,11 @@ Item {
           width: Math.max(320, scroll.availableWidth - Style.space(36))
           spacing: Style.space(14)
 
-          // ------------------------------------------------------------ hero
-          // Title only. The actions used to sit to the right of this, vertically
-          // centred against it, which left them floating above the thing they
-          // act on: both of them change the free models, and the free models
-          // are the list below. They moved down to the "Free today" line, which
-          // is the first line of the thing they operate on.
-          //
-          // Not PanelHero's `trailingControl` either: the hero is given no icon
-          // here, and with an empty icon slot the trailing loader had nothing to
-          // measure against and pushed its contents past the window edge.
-          PanelHero {
-            id: hero
-            width: parent.width
-            title: "Free models"
-            // No count here: the list directly below says which models are
-            // free, so "2 free" above the list is a number you have to
-            // cross-check against something you can already see.
-            meta: root.aaConfigured
-                  ? "Artificial Analysis · " + ((root.snapshot.aa && root.snapshot.aa.modelCount) || 0) + " models"
-                  : "no Artificial Analysis key"
-          }
+          // No title block. "Free today" directly below says what this is, and
+          // the AA model count was a number with nothing to compare it against.
+          // Whether Artificial Analysis is configured still shows up where it
+          // matters: the legend names it as a source, and a missing key raises a
+          // warning at the foot of the window.
 
           // --------------------------------------------------------- progress
           Column {
@@ -418,17 +422,12 @@ Item {
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader { width: parent.width; text: "Intelligence" }
-
-            Text {
-              width: parent.width
-              wrapMode: Text.Wrap
-              text: "accent = your free model · filled = Artificial Analysis · outlined = measured by this plugin"
-              color: root.textFaint
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-            }
-
+            // No section heading and no legend. Each block already names itself
+            // — "Artificial Analysis Intelligence Index", "Output speed" — so
+            // "Intelligence" above that was a third level of the same label, and
+            // the legend spelled out a distinction the window already makes
+            // visually: the free model's column and its label are the accent
+            // colour, and only the self-measured one is outlined.
             Repeater {
               model: root.intelligenceBlocks
               FreeForAllBlock {
@@ -447,8 +446,6 @@ Item {
           Column {
             width: parent.width
             spacing: Style.space(8)
-
-            PanelSectionHeader { width: parent.width; text: "Speed" }
 
             Repeater {
               model: root.speedBlocks
@@ -538,7 +535,10 @@ Item {
   // Fast while a run is in flight, slow otherwise.
   Timer {
     interval: root.evalState.running ? 2000 : 20000
-    running: true
+    // Only while the window is up. keepLoaded means this component is alive for
+    // the whole session, and a 20-second poll of a process that reports "no run"
+    // is not something to do forever behind a closed window.
+    running: root.windowVisible
     repeat: true
     triggeredOnStart: true
     onTriggered: root.pollEval()

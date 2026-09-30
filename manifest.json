@@ -11,6 +11,7 @@
     "service",
     "panel"
   ],
+  "keepLoaded": true,
   "entryPoints": {
     "service": "Service.qml",
     "panel": "FreeForAllPanel.qml"

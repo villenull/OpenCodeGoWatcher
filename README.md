@@ -44,8 +44,22 @@ Open it from the OpenCode Go tab in the agents panel — the **Free-model charts
 & eval** button — or directly:
 
 ```bash
-omarchy-shell shell summon io.github.villenull.opencode-go-watcher '{}'
+omarchy-shell opencode-go-watcher.charts open
 ```
+
+Note the target: `opencode-go-watcher.charts`, **not**
+`omarchy-shell shell summon io.github.villenull.opencode-go-watcher`. The panel
+owns an IPC target of its own, and the reason is a real bug.
+
+`summon` sets the shell's `openPanelIds[pluginId] = true` and hands the payload
+to the plugin through its Loader, which is active only while that id is set
+(`shell.qml:1337`). Close the window with `SUPER + W` and the compositor
+destroys the surface, which tears the Loader down. The panel's `onVisibleChanged`
+does call back `shell.hide()`, but the next `summon` still queues a payload that
+nobody delivers: **the button stops working until the shell is reloaded.** The
+manifest sets `keepLoaded: true`, so the panel component stays mounted whatever
+the registry says, and its own handler is always live. `open` there is
+idempotent — it can only ever open, never toggle a stale entry shut.
 
 ### The button is a local patch
 
