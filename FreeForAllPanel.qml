@@ -39,8 +39,42 @@ Item {
 
   function open(payloadJson) {
     closingFromHost = false
-    window.visible = true
     refresh(false)
+    if (window.visible) return
+    // Register the window rule first and map the window once Hyprland has it:
+    // rules only apply when a window is mapped.
+    windowRule.command = ["hyprctl", "eval", windowRuleLua()]
+    windowRule.running = true
+  }
+
+  // The window's Hyprland rule, registered at runtime instead of living in the
+  // user's config, the same way omarchy-launch-about sizes the About window.
+  // Replacing the previous rule on every open keeps the size in step with
+  // boxW/boxH. float + center + no pin is what makes it behave like About: it
+  // opens in the middle of the current workspace, SUPER + drag moves it, and it
+  // stays on that workspace. The opacity pair undoes omarchy's default 0.96
+  // window alpha, which reads as ghosting through a chart.
+  function windowRuleLua() {
+    return "if ogw_charts_rule then ogw_charts_rule:set_enabled(false) end; " +
+      "ogw_charts_rule = hl.window_rule({ " +
+      "match = { class = \"^org\\\\.quickshell$\", title = \"^" + window.title + "$\" }, " +
+      "float = true, center = true, size = { " + boxW + ", " + boxH + " }, " +
+      "tag = \"-default-opacity\", opacity = \"1 1\" })"
+  }
+
+  Process {
+    id: windowRule
+    // hyprctl eval reports a Lua error on stdout, not stderr.
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "ok") console.warn("opencode-go-watcher: window rule:", text.trim())
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("opencode-go-watcher: window rule:", text.trim())
+    }
+    // Show the window even if hyprctl failed: an unstyled window beats none.
+    onExited: window.visible = true
   }
 
   function close() {
@@ -180,8 +214,7 @@ Item {
   readonly property int screenW: screenInfo ? screenInfo.width : 1920
   readonly property int screenH: screenInfo ? screenInfo.height : 1080
 
-  // Must agree with the `size` in the Hyprland window rule. The rule wins when
-  // it is present; these are the fallback for when it is not, and the clamp
+  // The window's size: windowRuleLua() hands these to Hyprland, and the clamp
   // keeps the window inside a small screen.
   //
   // Sized so the header, the free-model list, both ten-row charts, the warnings
@@ -199,15 +232,14 @@ Item {
   // `hl.dsp.window.close()` — closes it. A PanelWindow is layer-shell, has no
   // toplevel for the compositor to focus, and is therefore uncloseable by any
   // window binding; it can only be dismissed by a keypress this surface happens
-  // to hold focus for.
-  //
-  // The cost is that a FloatingWindow fills the screen, so the window is
-  // transparent and the actual card is centred inside it. That is the same
-  // trade omarchy's own dev gallery makes: 3416x1390 of toplevel around a
-  // 720px panel.
+  // to hold focus for. The window rule from windowRuleLua() makes it float at
+  // boxW x boxH.
   FloatingWindow {
     id: window
     title: "OpenCode Go free models"
+    // Hidden until open() has registered the window rule; mapped any earlier,
+    // Hyprland would tile it.
+    visible: false
     // popups.background, not background: the raw background token carries the
     // theme's background alpha, and a panel drawn in it is see-through.
     color: root.cardSurface

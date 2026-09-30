@@ -118,77 +118,44 @@ is therefore invisible to every window binding: it can only be dismissed by a
 keypress the surface happens to hold keyboard focus for, which is a much weaker
 guarantee.
 
-The trade is that a `FloatingWindow` fills the screen, so the window is
-transparent and the card is centred inside it — the same trade omarchy's own dev
-gallery makes with 3416x1390 of toplevel around a 720px panel.
-
 Two ways to close it: `SUPER + W` and `Escape`. There is no Close button — the
 window is a normal toplevel, so the desktop's own close binding is the right one
 and a second control in the corner is noise. `Escape` is the fallback for when
 the window has not been focused yet, which a freshly summoned window may not
 have been.
 
-### One line of Hyprland config, and why the plugin cannot do it
+### No Hyprland config needed
 
-A toplevel is not automatically an overlay. Hyprland still lays it out, so
-without a rule the window takes a slot in your layout, sits beside your
-terminals, and is dragged around by the tiling engine — a *managed* window, not
-an overlay. Making it behave like a floating window needs a window rule, and
-window rules live in Hyprland's config, not in a Quickshell plugin. This is the
-one part of the feature that cannot be self-contained.
-
-Create `~/.config/hypr/apps.lua`:
+A toplevel is not automatically an overlay: without a window rule Hyprland
+tiles it beside your terminals. The plugin registers that rule itself, at
+runtime, each time the window opens — the same way `omarchy-launch-about`
+sizes the About window — so nothing is written to your Hyprland config:
 
 ```lua
-o.window({ class = "^org\\.quickshell$", title = "^OpenCode Go free models$" }, {
-  float = true,
-  center = true,
-  size = { 1180, 1010 },
-  pin = true,
-  tag = "-default-opacity",
-  opacity = "1 1",
+hl.window_rule({
+  match = { class = "^org\\.quickshell$", title = "^OpenCode Go free models$" },
+  float = true, center = true, size = { W, H },
+  tag = "-default-opacity", opacity = "1 1",
 })
 ```
 
-and add one line to `~/.config/hypr/hyprland.lua`, after the other `require`s:
-
-```lua
-require("hypr.apps")
-```
-
-Then reload Hyprland. Each option earns its place:
+The window stays hidden until `hyprctl eval` has returned, because rules only
+apply when a window is mapped. The result behaves like About: it opens in the
+middle of the workspace you are on, `SUPER` + drag moves it, and it stays on
+that workspace when you switch away (there is deliberately no `pin`).
 
 | Option | Why |
 |---|---|
-| `float` | the overlay behaviour — does not interact with the tiled windows |
-| `center` | open in the middle rather than wherever the compositor drops a new toplevel |
-| `size` | the window surface *is* the card, so this is the card's size; the QML falls back to the same numbers. Sized so the header, the free-model list, both ten-row charts, the warnings and the attribution all fit without scrolling — a comparison view you have to scroll is a comparison view you cannot make |
-| `pin` | without it the window opens on whichever workspace the shell process is on, which is not necessarily yours, and it looks like nothing happened |
-| `tag`, `opacity` | omarchy tags every window `+default-opacity` and applies `opacity = "0.985 0.96"`. Removing the tag alone does nothing — omarchy's own `qemu` rule pairs the removal with an explicit `opacity = "1 1"`, and so must this. A chart is not a wallpaper: at that alpha the text of whatever is behind reads through the columns and the gaps between them, and looks like ghosting in the plot |
+| `float`, `center` | an overlay in the middle of the screen, not a tile |
+| `size` | the window surface *is* the card; taken from the QML so the two never disagree |
+| `tag`, `opacity` | omarchy tags every window `+default-opacity` and applies `0.985 0.96`. Removing the tag alone does nothing — omarchy's own `qemu` rule pairs it with `opacity = "1 1"`, and so must this. At 0.96 the text behind reads through the chart as ghosting |
 
-Four traps, all of which cost a round trip here.
-
-The match is on the **class** when you pass a string, and the class here is
-`org.quickshell` — which is every Quickshell toplevel including omarchy's own —
-so the table form matching `title` is required.
-
-Rules apply when a window is *mapped*, so a window already open keeps whatever it
-had. Close it and summon it again to see a rule take effect, or you will conclude
-the rule does nothing.
-
-And do not add an animation field. `no_anim` belongs to `hl.layer_rule`;
-`hl.window_rule` rejects it and takes the **whole config** down with
-`Your config has errors: … unknown field 'no_anim'`. Omarchy's window rules have
-no animation option at all.
-
-The last one is the subtle one. The surface colour is already opaque, so forcing
-its alpha to 1 changes nothing — the see-through is the *compositor* applying
-0.96 to the window, and it is invisible until a text-heavy window happens to
-sit behind the chart. It then reads as ghosting inside the plot rather than as a
-translucent panel, which sends you looking for a layout bug that is not there.
+The match is on class **and** title because `org.quickshell` is every
+Quickshell toplevel, omarchy's own included. Each open replaces the previous
+rule rather than stacking another.
 
 Verify with `hyprctl clients -j | jq '.[] | select(.title|test("free models"))'`
-— you want `"floating":true` and `"pinned":true`.
+— you want `"floating":true` and `"pinned":false`.
 
 | Chart | Blocks | Source |
 |---|---|---|
@@ -304,10 +271,8 @@ Other verbs, all non-interactive:
 `--set-aa-key KEY` also exists, but it puts the key in your shell history, so
 prefer the prompt.
 
-For the free-model charts, add the one line of Hyprland config described under
-[*One line of Hyprland config*](#one-line-of-hyprland-config-and-why-the-plugin-cannot-do-it)
-— without it that window is a managed, tiled window rather than an overlay.
-Everything else works with no configuration at all.
+The free-model charts window needs no Hyprland config; see
+[*No Hyprland config needed*](#no-hyprland-config-needed).
 
 Then sign in to OpenCode Go if you have not already — `opencode auth login`, or
 any `opencode-go` model in opencode itself. The tab appears on the next
