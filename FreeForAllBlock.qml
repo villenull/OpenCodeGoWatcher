@@ -37,7 +37,7 @@ Column {
   readonly property real headroom: 0.86
   property real columnGap: Style.space(4)
   property real barWidth: 54
-  property real labelHeight: 46
+  property real labelHeight: 64
 
   spacing: Style.space(3)
 
@@ -192,6 +192,31 @@ Column {
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             font.bold: column.isFree
+          }
+
+          // The configuration the number was measured at, under the name. A
+          // 57.6 taken at max effort with a fallback is not the same claim as
+          // a bare 57.6, and with one row per model it is no longer visible in
+          // the name itself. Dim so the name stays the label. Empty for models
+          // AA publishes without a parenthetical, which is why the line is
+          // hidden rather than blank.
+          Text {
+            width: column.width
+            y: root.plotHeight + Style.space(40)
+            horizontalAlignment: Text.AlignHCenter
+            visible: text.length > 0
+            text: modelData ? (modelData.configLabel || "") : ""
+            // One line, elided. A column is about 110px and the widest label
+            // is 20 characters, so this is a backstop rather than the norm —
+            // but an overlapping label is far worse than a truncated one.
+            elide: Text.ElideRight
+            color: column.isFree ? Qt.alpha(root.accentColor, 0.6) : Qt.alpha(root.textSoft, 0.55)
+            font.family: Style.font.family
+            // A step below the name. "adaptive·fallback" is 17 characters and a
+            // column is about 114px, so at bodySmall it elides to
+            // "adaptive·fallba…" and the line stops saying anything. Never below
+            // 9px, whatever the theme picks for bodySmall.
+            font.pixelSize: Math.max(9, Math.round(Style.font.bodySmall * 0.85))
           }
         }
       }

@@ -119,6 +119,80 @@ check("a null body is empty text", "", complete.extract_text("chat", None))
 check("a missing message does not raise", "", complete.extract_text("chat", {"choices": [{}]}))
 
 
+# ----------------------------------------------------- dashboard: AA variants
+
+section("dashboard: which configuration a number came from")
+check("max effort is the default and is not restated", "", dashboard.config_label("GPT-6 Astra (max)"))
+check("a size survives the stripping of max", "3.3b", dashboard.config_label("Meta Spark (3.3B max)"))
+check("the deviations are the ones worth showing", "adaptive\u00b7fallback",
+      dashboard.config_label("Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)"))
+check("a no-fallback variant keeps the distinction", "adaptive\u00b7no fallback",
+      dashboard.config_label("Claude Opus 5 (Adaptive Reasoning, Max Effort, No Fallback)"))
+check("a named fallback model collapses to fallback", "adaptive\u00b7fallback",
+      dashboard.config_label("Claude Fable 5 (Adaptive Reasoning, Max Effort, Opus 4.8 Fallback)"))
+check("a non-max effort is a deviation and is shown", "high", dashboard.config_label("Gemini 3.7 Flash (high)"))
+check("a model with no parenthetical has no config", "", dashboard.config_label("Celeris-1"))
+check("an unrelated bracket is not a config", "", dashboard.config_label("Gemma 3 [2B]"))
+check("no label is wide enough to reach its neighbour", True,
+      all(len(dashboard.config_label(n)) <= 20 for n in [
+        "Claude Opus 5 (Adaptive Reasoning, Max Effort, No Fallback)",
+        "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)",
+      ]))
+
+section("dashboard: one row per base model")
+VARIANTS = [
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)", "slug": "opus-max", "intelligence": 57.6, "tokensPerSecond": 61.0},
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback)", "slug": "opus-xhigh", "intelligence": 56.0, "tokensPerSecond": 55.0},
+  {"name": "Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback)", "slug": "opus-high", "intelligence": 53.6, "tokensPerSecond": 50.0},
+  {"name": "GPT-6 Astra (max)", "slug": "astra-max", "intelligence": 52.7, "tokensPerSecond": 76.0},
+  {"name": "GPT-6 Astra (xhigh)", "slug": "astra-xhigh", "intelligence": 52.4, "tokensPerSecond": 70.0},
+  {"name": "Celeris-1", "slug": "celeris-1", "intelligence": 50.0, "tokensPerSecond": 120.0},
+]
+def context(catalogue, field="intelligence", used=frozenset()):
+  """Rows as the snapshot actually emits them, display fields included."""
+  rows = dashboard._context_rows(catalogue, set(used), field, f"aa-{field}")
+  dashboard._add_short_labels([{"rows": rows}])
+  return rows
+
+rows = context(VARIANTS)
+check("three Opuses collapse to one row", 3, len(rows))
+check("and so do two Atras", 3, len({dashboard.short_label(r["label"]) for r in rows}))
+check("the winner is the max-effort entry", "opus-max", rows[0]["aaSlug"])
+check("a plain name is its own base", "celeris-1", [r for r in rows if r["aaSlug"] == "celeris-1"][0]["aaSlug"])
+check("each row carries its own config", "adaptive\u00b7fallback", rows[0]["configLabel"])
+
+section("dashboard: preferring max beats a higher raw score")
+# A model with no (max) entry still gets its best, and a model whose only entry
+# is a non-max effort keeps it rather than being dropped.
+MIXED = [
+  {"name": "Ranger 2 (high)", "slug": "ranger-high", "intelligence": 40.0, "tokensPerSecond": 30.0},
+  {"name": "Ranger 2 (medium)", "slug": "ranger-medium", "intelligence": 36.0, "tokensPerSecond": 28.0},
+  {"name": "Pike 3 (medium)", "slug": "pike-medium", "intelligence": 44.0, "tokensPerSecond": 60.0},
+]
+mixed = context(MIXED)
+check("without a max, the best score is kept", "ranger-high", mixed[1]["aaSlug"])
+check("and it is kept even when it is not max", "high", mixed[1]["configLabel"])
+check("a lone non-max model is not dropped", "pike-medium", mixed[0]["aaSlug"])
+
+section("dashboard: dedup respects the other filters")
+check("a used model is still excluded", 2, len(context(
+  VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "astra-max"})))
+check("excluding the max re-admits its sibling", ["astra-xhigh"],
+      [r["aaSlug"] for r in context(
+        VARIANTS, used={"opus-max", "opus-xhigh", "opus-high", "celeris-1", "astra-max"})])
+check("a missing value is skipped", 0, len(context([{"name": "Blank (max)", "slug": "blank", "intelligence": None}])))
+check("speed dedups the same way", 3, len(context(VARIANTS, field="tokensPerSecond")))
+many = VARIANTS + [
+  {"name": f"Model {n} (max)", "slug": f"m{n}", "intelligence": float(40 - n), "tokensPerSecond": 10.0}
+  for n in range(9)
+]
+check("the cap applies across distinct base models", 10, len(context(many)))
+check("the cap keeps the highest, in order", [57.6, 52.7, 50.0], [r["value"] for r in context(many)[:3]])
+dropped = {m["slug"] for m in many if m["slug"] not in {r["aaSlug"] for r in context(many)}}
+check("the weakest models are among those dropped", True, {"m7", "m8"} <= dropped)
+check("and so are the effort levels the dedupe removed", True, {"opus-xhigh", "opus-high"} <= dropped)
+
+
 # ----------------------------------------------------------- omniscience.py
 
 section("omniscience: grading")
