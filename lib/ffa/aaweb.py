@@ -49,17 +49,15 @@ def _string(segment: str, key: str) -> str | None:
   return match.group(1) if match else None
 
 
-def _omniscience(segment: str) -> float | None:
-  """AA-Omniscience index, -100..100. Newer models carry it in the index's
-  evaluation list; older ones only as a top-level field."""
-  listed = re.search(r'\{"slug":"omniscience","score":(-?[0-9.]+)', segment)
-  if listed:
-    return float(listed.group(1))
-  return _number(segment, "omniscience")
+def _scicode(segment: str) -> float | None:
+  """SciCode, as a 0..1 share of sub-problems passed, from the index's
+  evaluation list."""
+  listed = re.search(r'\{"slug":"scicode","score":(-?[0-9.]+)', segment)
+  return float(listed.group(1)) if listed else None
 
 
 def parse_models(html: str) -> dict[str, dict[str, Any]]:
-  """slug -> {slug, name, releaseSlug, intelligence, tokensPerSecond, omniscience, deprecated}."""
+  """slug -> {slug, name, releaseSlug, intelligence, tokensPerSecond, scicode, deprecated}."""
   text = _payload(html)
   starts = [match.start() for match in _RECORD_START.finditer(text)]
   models: dict[str, dict[str, Any]] = {}
@@ -76,7 +74,7 @@ def parse_models(html: str) -> dict[str, dict[str, Any]]:
       "releaseSlug": release.group(1) if release else slug,
       "intelligence": _number(segment, "intelligenceIndex"),
       "tokensPerSecond": _number(segment, "medianOutputSpeed"),
-      "omniscience": _omniscience(segment),
+      "scicode": _scicode(segment),
       "deprecated": '"deprecated":true' in segment[:4000],
     }
     # The payload can mention a model more than once; keep the fullest record.
@@ -99,7 +97,10 @@ def _fetch(url: str) -> str:
 def fetch_models(force: bool = False) -> dict[str, Any]:
   """{"models": {slug: record}, "fetchedAt": epoch, "warning": str | None}."""
   cached = store.read_data("aa-web")
+  # A copy saved before SciCode was read has no "scicode" field at all; that
+  # is stale whatever its age.
   fresh = (isinstance(cached, dict) and isinstance(cached.get("models"), dict)
+           and any("scicode" in model for model in cached["models"].values())
            and 0 <= time.time() - float(cached.get("at") or 0) < CACHE_TTL_SECONDS)
   if fresh and not force:
     return {"models": cached["models"], "fetchedAt": cached["at"], "warning": None}

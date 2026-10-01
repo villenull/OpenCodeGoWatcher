@@ -17,7 +17,7 @@ from typing import Any
 
 # OpenCode Go refuses requests without `x-opencode-session` — it cannot route
 # them. One id per process also lets the gateway reuse the prompt cache across a
-# run, which matters a lot when the same grader prompt goes out 600 times.
+# run, which matters when a problem's steps all repeat the same opening.
 SESSION_ID = "ffa-" + uuid.uuid4().hex[:8]
 
 USER_AGENT = "opencode-go-watcher-free-for-all/1.0"
@@ -116,14 +116,14 @@ def write_data(name: str, payload: Any) -> None:
   write_json(data_path(name), payload)
 
 
-def read_eval_history() -> list[dict[str, Any]]:
-  cached = read_data("eval-history")
-  grades = cached.get("grades") if isinstance(cached, dict) else None
-  return grades if isinstance(grades, list) else []
+def read_scicode_history() -> list[dict[str, Any]]:
+  cached = read_data("scicode-history")
+  results = cached.get("results") if isinstance(cached, dict) else None
+  return results if isinstance(results, list) else []
 
 
-def push_eval_history(grade: dict[str, Any]) -> list[dict[str, Any]]:
+def push_scicode_history(result: dict[str, Any]) -> list[dict[str, Any]]:
   """Newest first, capped so the file cannot grow without bound."""
-  next_grades = [grade, *read_eval_history()][:50]
-  write_data("eval-history", {"grades": next_grades})
-  return next_grades
+  next_results = [result, *read_scicode_history()][:50]
+  write_data("scicode-history", {"results": next_results})
+  return next_results

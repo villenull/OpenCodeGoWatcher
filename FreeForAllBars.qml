@@ -5,9 +5,9 @@ import "."
 // One chart block as horizontal bars: a caption, its unit, then one row per
 // model — name, bar, value.
 //
-// Horizontal rather than columns so three blocks fit side by side and model
-// names stay on one line. Blocks never share an axis: AA's Intelligence Index,
-// the −100…100 Omniscience index and tokens/second are different scales.
+// Horizontal rather than columns so the blocks fit side by side and model names
+// stay on one line. Blocks never share an axis: SciCode's percentage and
+// tokens/second are different scales.
 //
 // Row styling carries the row's role, so the chart needs no per-row prefix:
 //   free          accent-coloured name and bar
@@ -34,8 +34,8 @@ Column {
   readonly property var rows: (root.block && root.block.rows) ? root.block.rows : []
   readonly property var domain: (root.block && root.block.domain) ? root.block.domain : ({ min: 0, max: 1, zero: 0 })
   readonly property real span: (Number(root.domain.max || 1) - Number(root.domain.min || 0)) || 1
-  // Where value 0 sits across the bar track, 0..1. Only the Omniscience block
-  // goes negative; everywhere else this is 0.
+  // Where value 0 sits across the bar track, 0..1. No current block goes
+  // negative, so this is 0, but a diverging scale would still draw right.
   readonly property real zero: Math.max(0, Math.min(1, Number(root.domain.zero || 0)))
 
   Text {

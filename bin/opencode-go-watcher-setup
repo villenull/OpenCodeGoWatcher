@@ -1,13 +1,13 @@
 #!/usr/bin/python3
-# omarchy:summary=Check the OpenCode Go Watcher's setup (keys, grader, speed probe)
+# omarchy:summary=Check the OpenCode Go Watcher's setup (key, SciCode, speed probe)
 # omarchy:args=[--status] [--probe-speed] [--clear-aa-key]
 # omarchy:hidden=true
 """Setup check for the free-model charts.
 
 Nothing needs configuring. Artificial Analysis figures come from their public
-website, the free models answer with the opencode Go key you already have, and
-the Omniscience grader is Big Pickle on OpenCode Zen, reached through the
-`opencode` CLI because Zen's free tier only serves OpenCode itself. This
+website, and the free models answer with the opencode Go key you already have.
+SciCode runs the code they write under bubblewrap, with a private Python
+environment and SciCode's test data, both fetched by the first run. This
 reports whether each of those is in place.
 
 `--clear-aa-key` removes an Artificial Analysis API key stored by an older
@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from ffa import eval as eval_mod, opencode, speed, store  # noqa: E402
+from ffa import opencode, scicode, speed, store  # noqa: E402
 
 
 def head(text: str) -> None:
@@ -43,14 +42,6 @@ def note(text: str) -> None:
   print(f"    {text}")
 
 
-def zen_signed_in(opencode_bin: str) -> bool:
-  try:
-    listed = subprocess.run([opencode_bin, "auth", "list"], capture_output=True, text=True, timeout=30)
-  except (OSError, subprocess.TimeoutExpired):
-    return False
-  return "OpenCode Zen" in listed.stdout
-
-
 def show_status() -> None:
   head("Setup")
 
@@ -61,15 +52,17 @@ def show_status() -> None:
     bad("no opencode Go key")
     note("The free models answer with it. Run `opencode auth login` and choose OpenCode Go.")
 
-  opencode_bin = shutil.which("opencode")
-  if not opencode_bin:
-    bad("the opencode CLI is not on PATH")
-    note("The Omniscience grader runs through it.")
-  elif zen_signed_in(opencode_bin):
-    ok(f"grader — {eval_mod.GRADER_MODEL} via {opencode_bin}")
+  if shutil.which("bwrap"):
+    ok("bubblewrap — model-written code runs sealed off")
   else:
-    bad("not signed in to OpenCode Zen")
-    note(f"The grader, {eval_mod.GRADER_MODEL}, is free on Zen. Run `opencode auth login` and choose OpenCode Zen.")
+    bad("bubblewrap (bwrap) is missing")
+    note("SciCode needs it to run model-written code safely: omarchy pkg add bubblewrap")
+
+  if scicode.env_ready() and scicode.data_ready():
+    ok(f"SciCode test data and Python packages — {scicode.scicode_dir()}")
+  else:
+    bad("SciCode not downloaded yet")
+    note("The first Run SciCode fetches its test data (1 GB) and Python packages (~150 MB).")
 
   speed_cache = store.read_data("speed")
   probed = speed_cache.get("probedAt") if isinstance(speed_cache, dict) else None
@@ -81,13 +74,13 @@ def show_status() -> None:
     bad("speed never measured")
     note("The window's Measure speed button does this on demand.")
 
-  history = store.read_eval_history()
+  history = store.read_scicode_history()
   if history:
-    ok(f"Omniscience — {len({grade.get('opencodeId') for grade in history})} model(s) graded, "
+    ok(f"SciCode — {len({result.get('opencodeId') for result in history})} model(s) benchmarked, "
        f"last {str(history[0].get('finishedAt', ''))[:19].replace('T', ' ')}Z")
   else:
-    bad("Omniscience never run")
-    note("The window's Run Omniscience button does this.")
+    bad("SciCode never run")
+    note("The window's Run SciCode button does this.")
 
   if store.read_settings().get("aaApiKey"):
     note("An Artificial Analysis API key from an older version is still stored and")

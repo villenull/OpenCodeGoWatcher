@@ -1,8 +1,9 @@
 """Self-measured output tokens per second.
 
-Ported from server/speed.ts. The window deliberately excludes time-to-first-token
-because that is how Artificial Analysis measures it, and it is the only reason
-our number and theirs belong on one axis.
+Measured the way Artificial Analysis measures output speed: every output token
+(reasoning included) over the time from the first streamed token to the last,
+so time-to-first-token is excluded. That is the only reason our number and
+theirs belong on one axis.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 from . import store
 
 GO_CHAT_URL = "https://opencode.ai/zen/go/v1/chat/completions"
-SAMPLES = 2
+SAMPLES = 3
 
 # A window shorter than this is not a measurement. The gateway does not stream
 # at a steady cadence: sometimes the whole completion arrives buffered in a
@@ -27,7 +28,7 @@ SAMPLES = 2
 # than light and obviously wrong. Such a sample is dropped instead.
 MIN_WINDOW_SECONDS = 0.25
 
-MAX_TOKENS = 700
+MAX_TOKENS = 1000
 
 # The probe prompt differs per sample on purpose. An identical prompt would let
 # the gateway's prompt cache serve sample 2 instantly, and a cached sample's
@@ -57,6 +58,11 @@ def sample_once(api_key: str, model: str, sample_index: int) -> dict[str, float 
   anything. The window starts at the first event and ends at the last, which
   excludes time-to-first-token — the same thing Artificial Analysis measures, and
   the only reason the two numbers can share an axis.
+
+  The first event is the first token of any kind, reasoning included. The
+  reported token count includes a reasoning model's hidden thinking, so timing
+  only the visible answer divided every token by the last second of output:
+  Space Bunny measured 621 tok/s that way, against ~160 timed properly.
   """
   prompt = COUNT_PROMPTS[sample_index % len(COUNT_PROMPTS)]
   request = urllib.request.Request(
@@ -107,12 +113,12 @@ def sample_once(api_key: str, model: str, sample_index: int) -> dict[str, float 
 
         now = time.perf_counter()
         choices = parsed.get("choices") if isinstance(parsed, dict) else None
-        content = None
+        emitted = False
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
           delta = choices[0].get("delta")
           if isinstance(delta, dict):
-            content = delta.get("content")
-        if isinstance(content, str) and content:
+            emitted = any(delta.get(field) for field in ("content", "reasoning_content", "reasoning", "reasoning_details"))
+        if emitted:
           deltas += 1
           if first_event_at is None:
             first_event_at = now

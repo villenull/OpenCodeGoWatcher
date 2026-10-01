@@ -1,10 +1,11 @@
 """Snapshot assembly: the view model the two charts render.
 
-Ported from server/dashboard.ts. The structure is the important part — each of
-`rows.intelligence` and `rows.speed` is a *list* of blocks, not one block,
-because AA's Intelligence Index runs 0-70 while our own Omniscience run runs
--100..100. Putting both on one axis would produce a chart that looks
-authoritative and is not, so they stay separate blocks inside one card.
+Two charts, side by side: SciCode (the share of SciCode's sub-problems a model's
+code passes) and output speed. Both are numbers Artificial Analysis publishes
+for the paid models and that this plugin measures the same way for the free
+ones, so each pair genuinely shares an axis. `rows.intelligence` and
+`rows.speed` stay lists of blocks so a chart can be added without reshaping
+the window.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from . import aaweb, eval as eval_mod, match, opencode, store
+from . import aaweb, eval as eval_mod, match, opencode, scicode, store
 
 # How long a built snapshot is reused. The AA website data is cached for a day
 # on its own (aaweb); this mostly spares the Go catalogue request.
@@ -42,13 +43,13 @@ def _add_short_labels(blocks: list[dict[str, Any]]) -> None:
   for block in blocks:
     for row in block.get("rows") or []:
       row["shortLabel"] = short_label(str(row.get("label") or ""))
-      row["configLabel"] = config_label(str(row.get("label") or ""))
+      # A free model's effort isn't in its name; its row carries it already.
+      row.setdefault("configLabel", config_label(str(row.get("label") or "")))
 
 
 def build_domain(values: list[float]) -> dict[str, float]:
-  """Always clamps min <= 0 <= max, so a bar can extend left of zero on the
-  diverging Omniscience scale. `zero` is that line as a 0..1 fraction of the
-  plot width."""
+  """Always clamps min <= 0 <= max, so a bar could extend left of zero on a
+  diverging scale. `zero` is that line as a 0..1 fraction of the plot width."""
   maximum = max([*values, 0.0])
   minimum = min([*values, 0.0])
   span = (maximum - minimum) or 1.0
@@ -81,12 +82,12 @@ def _is_max_effort(name: str) -> bool:
   return config_label(name) == ""
 
 
-def _latest_grades(history: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _latest_results(history: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
   latest: dict[str, dict[str, Any]] = {}
-  for grade in history:
-    model_id = grade.get("opencodeId")
+  for result in history:
+    model_id = result.get("opencodeId")
     if isinstance(model_id, str) and model_id not in latest:
-      latest[model_id] = grade
+      latest[model_id] = result
   return latest
 
 
@@ -128,14 +129,14 @@ def _top_context(models: list[dict[str, Any]], exclude_releases: set[str]) -> li
   return sorted(best.values(), key=lambda model: -model["intelligence"])[:TOP_CONTEXT]
 
 
-def _aa_row(model: dict[str, Any], field: str, scale: str, role: str) -> dict[str, Any] | None:
+def _aa_row(model: dict[str, Any], field: str, scale: str, role: str, factor: float = 1.0) -> dict[str, Any] | None:
   value = model.get(field)
   if value is None:
     return None
   return {
     "key": f"aa:{model['slug']}",
     "label": model["name"],
-    "value": round(float(value), 1),
+    "value": round(float(value) * factor, 1),
     "source": "aa",
     "scale": scale,
     "isFree": False,
@@ -153,29 +154,6 @@ def _block(scale: str, caption: str, unit: str, rows: list[dict[str, Any]]) -> d
     "domain": build_domain([row.get("value") or 0 for row in rows]),
     "rows": rows,
   }
-
-
-def _summary(free: list[dict[str, Any]], omni: dict[str, float], speed: dict[str, float],
-             orch_omni: list[float], orch_speed: list[float]) -> list[str]:
-  """One plain line per free model, measured against the orchestrators, plus
-  which free model came out ahead. Directional: our Omniscience run is a
-  100-question sample graded by Big Pickle, AA's is 6,000 with their grader."""
-  lines = []
-  median_speed = sorted(orch_speed)[len(orch_speed) // 2] if orch_speed else None
-  for model in free:
-    parts = []
-    if model["id"] in omni and orch_omni:
-      parts.append(f"Omniscience {omni[model['id']]:.0f} vs your orchestrators' "
-                   f"{min(orch_omni):.0f}–{max(orch_omni):.0f}")
-    if model["id"] in speed and median_speed:
-      parts.append(f"{speed[model['id']] / median_speed:.1f}× their typical speed")
-    if parts:
-      lines.append(f"{model['label']}: " + " · ".join(parts))
-  scored = [model for model in free if model["id"] in omni]
-  if len(scored) > 1:
-    best = max(scored, key=lambda model: omni[model["id"]])
-    lines.append(f"Smarter free model right now: {best['label']}")
-  return lines
 
 
 def build_snapshot(force: bool = False) -> dict[str, Any]:
@@ -207,35 +185,26 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
   if isinstance(speed_cache, dict) and isinstance(speed_cache.get("rows"), list):
     speed_rows = {row["opencodeId"]: row for row in speed_cache["rows"]
                   if isinstance(row, dict) and isinstance(row.get("opencodeId"), str)}
-  grades = _latest_grades(store.read_eval_history())
+  results = _latest_results(store.read_scicode_history())
   matches = {model["id"]: match.match_aa_model(model["id"], catalogue) for model in free}
 
   def free_row(model: dict[str, Any], key: str, value: float, source: str, scale: str, note: str | None) -> dict[str, Any]:
     return {"key": key, "label": model["label"], "value": value, "source": source, "scale": scale,
             "isFree": True, "role": "free", "opencodeId": model["id"], "note": note}
 
-  # --- Smarts: Omniscience, the one test both sides take --------------------
-  omni_rows = [row for model, role in paid if (row := _aa_row(model, "omniscience", "omniscience", role))]
-  free_omni: dict[str, float] = {}
+  # --- SciCode: AA's published share for the paid models, our run for the free
+  # ones, as a percentage of sub-problems passed.
+  scicode_rows = [row for model, role in paid if (row := _aa_row(model, "scicode", "scicode", role, 100.0))]
   for model in free:
-    grade = grades.get(model["id"])
-    if not grade:
+    result = results.get(model["id"])
+    if not result:
       continue
-    # Our index is -1..1; as points it reads on AA's -100..100 scale.
-    value = round(float(grade.get("index", 0)) * 100, 1)
-    free_omni[model["id"]] = value
-    omni_rows.append(free_row(model, f"omni:{model['id']}", value, "self", "omniscience",
-                              f"our run · {grade.get('total')} questions · "
-                              f"accuracy {round(float(grade.get('accuracy', 0)) * 100)}%"
-                              + (f" · {grade['skipped']} unanswered, left out" if grade.get("skipped") else "")))
-
-  # --- Smarts: AA's overall index, for context --------------------------------
-  index_rows = [row for model, role in paid if (row := _aa_row(model, "intelligence", "aa-index", role))]
-  for model in free:
-    entry = matches.get(model["id"])
-    if entry and entry["model"].get("intelligence") is not None:
-      index_rows.append(free_row(model, f"free:{model['id']}", round(entry["model"]["intelligence"], 1),
-                                 "aa", "aa-index", model.get("note")))
+    row = free_row(model, f"scicode:{model['id']}", round(float(result.get("score", 0)) * 100, 1),
+                   "self", "scicode",
+                   f"our run · {result.get('passed')}/{result.get('attempted')} sub-problems"
+                   + (f" · {result['skipped']} unanswered, left out" if result.get("skipped") else ""))
+    row["configLabel"] = result.get("effort") or ""
+    scicode_rows.append(row)
 
   # --- Speed --------------------------------------------------------------------
   speed_block_rows = [row for model, role in paid if (row := _aa_row(model, "tokensPerSecond", "aa-speed", role))]
@@ -257,8 +226,7 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
     warnings.append("opencode Go is serving no free models right now.")
 
   intelligence_blocks = [
-    _block("omniscience", "AA-Omniscience", "−100…100 · higher is better", omni_rows),
-    _block("aa-index", "AA Intelligence Index", "higher is better", index_rows),
+    _block("scicode", "SciCode", "% of sub-problems solved · higher is better", scicode_rows),
   ]
   snapshot = {
     "fetchedAt": _now_iso(),
@@ -267,17 +235,15 @@ def build_snapshot(force: bool = False) -> dict[str, Any]:
       "intelligence": intelligence_blocks,
       "speed": [_block("aa-speed", "Output speed", "tokens/second · higher is better", speed_block_rows)],
     },
-    "summary": _summary(free, free_omni, free_speed,
-                        [model["omniscience"] for model in orchestrators if model.get("omniscience") is not None],
-                        [model["tokensPerSecond"] for model in orchestrators if model.get("tokensPerSecond") is not None]),
-    "unmatched": [model["id"] for model in free if model["id"] not in free_omni and model["id"] not in free_speed],
+    "unmatched": [model["id"] for model in free if model["id"] not in results and model["id"] not in free_speed],
     "warnings": warnings,
     "speedProbedAt": speed_cache.get("probedAt") if isinstance(speed_cache, dict) else None,
     "eval": eval_mod.read_state(),
+    "scicode": {"downloaded": scicode.data_ready()},
     # Free models with no result yet from an operation only we can run; the
     # window rings the matching button red while these are non-empty.
     "pending": {
-      "intelligence": [model["id"] for model in free if model["id"] not in grades],
+      "intelligence": [model["id"] for model in free if model["id"] not in results],
       "speed": [model["id"] for model in free if model["id"] not in speed_rows],
     },
     "aa": {

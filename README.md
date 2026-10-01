@@ -37,20 +37,18 @@ truth.
 A second window answers one question: **how do the free models compare with
 the models you orchestrate with?** It puts the free models next to Claude Opus
 5.5, Claude Sonnet 5.5, GPT-6.1 Sol and GPT-6 Astra at medium effort, plus a few
-of Artificial Analysis's top models for scale, on three charts side by side:
+of Artificial Analysis's top models for scale, on two charts side by side:
 
 | Chart | Paid models | Free models |
 |---|---|---|
-| **AA-Omniscience** (−100…100) | published by Artificial Analysis | our own run, graded by Big Pickle |
-| **AA Intelligence Index** | published by Artificial Analysis | only if AA publishes one |
+| **SciCode** (% of sub-problems solved) | published by Artificial Analysis | our own run, the same test the same way |
 | **Output speed** (tokens/s) | published by Artificial Analysis | measured locally, the way AA measures |
 
-Omniscience is the one test both sides take — AA publishes it for every model
-and the plugin runs the public question set itself — so it is the chart that
-says how much "dumber" a free model is. A line under the charts spells it out,
-e.g. *Space Bunny Free: Omniscience 35 vs your orchestrators' 20–42 · 6.4× their
-typical speed*. It is directional: our run is 100 questions graded by Big
-Pickle, AA's is 6,000 with their own grader.
+SciCode asks a model to write real scientific Python, step by step, and runs
+the code against the benchmark's tests: a step passes only if every test case
+does. Nothing grades it but the tests, so the free models' numbers sit on the
+same axis as the published ones. It is part of AA's Intelligence Index, and the
+closest of its tests to what a coding worker does that can be run here.
 
 The orchestrators are set in code (`DEFAULT_ORCHESTRATORS` in
 `lib/ffa/dashboard.py`), or with `"orchestrators": ["claude-opus-5-5-medium", …]`
@@ -182,32 +180,55 @@ declares one ramp of lifted foregrounds instead and threads it into the rows, so
 secondary text keeps the theme's hue and stays readable. Change the ramp in one
 place rather than per widget.
 
-The three charts are deliberately **not** on one axis: they are different
+The two charts are deliberately **not** on one axis: they are different
 scales. In every row, an **accent** name is a free model, a **bold** one is one
 of your orchestrators and a **dim** one is AA's top models for scale; a filled
 bar is a published number and an outlined one was measured by this plugin.
 
-**The eval costs nothing.** The free models answer through your Go key (free
-models are unlimited), and the grader is **Big Pickle**, free on OpenCode Zen —
-a free model grading itself would not be a measurement. Zen's free tier only
-serves requests made from OpenCode, so grades go through `opencode run`
-(read-only `plan` agent, empty scratch directory, no plugins), not the HTTP API.
-Big Pickle is rate-limited per day, so a run grades **100** of the 600 public
-questions per free model, spread evenly across all six subject areas: about 400
-calls and 7–10 minutes. The run is a detached process, so closing the window or
-reloading the shell neither kills it nor loses its progress; the window polls a
-state file and shows a live counter. Pass a count to change the size:
+### The SciCode run
 
-```bash
-~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/opencode-go-watcher-free-for-all-eval start 600
-```
+**Run SciCode** benchmarks every free model the way Artificial Analysis does:
+
+- the **288 scored sub-problems** of SciCode's test split (65 problems; the
+  three steps the official harness never asks for are given, not scored);
+- the **scientist-annotated background** prompt, word for word;
+- each step is shown the model's **own code** for the earlier steps of its
+  problem, so a problem's steps run in order;
+- **medium reasoning effort**, like the orchestrators on the chart and like
+  OpenCode's own `medium` variant; at the API's default Space Bunny spent its
+  whole 16,000-token budget thinking about one step and wrote no code;
+- each step's script has the **300-second timeout** AA uses.
+
+**It costs nothing but time.** The free models answer through your Go key, and
+there is no grader to pay for. A run is one call per step plus running the
+code — roughly an hour or more per free model, four problems at a time. It runs
+as a detached process, so closing the window or reloading the shell doesn't
+stop it, and a run that does stop picks up where it left off next time.
+
+**The first run downloads two things** into the plugin's state directory:
+SciCode's numeric test targets (1 GB, from a pinned and checksummed Hugging
+Face copy, since the authors host the original on Google Drive) and a private
+Python environment with numpy, scipy, sympy, h5py and matplotlib (~150 MB).
+
+**Model-written code runs sealed off** under bubblewrap: no network, your home
+directory replaced by an empty one, and only that environment, the targets and
+SciCode's helpers visible, read-only. A step that allocates more than 8 GB is
+stopped.
+
+The harness checks itself: `opencode-go-watcher-free-for-all-eval verify` runs
+the official solutions of SciCode's 15-problem practice split through it. 48 of
+the 50 pass; the other two fail outside the sandbox too, so the fault is in
+SciCode's own data. Current numpy and scipy dropped a few names SciCode's
+problems were written against (two problems import `scipy.integrate.simps`), so
+`lib/scicode_support/sitecustomize.py` puts each back as its documented
+replacement.
 
 ### Data sources
 
 | What | Where it comes from |
 |---|---|
-| Paid models: index, Omniscience, speed | artificialanalysis.ai, the public website |
-| Free models: Omniscience | our own run (the Run Omniscience button) |
+| Paid models: SciCode, speed | artificialanalysis.ai, the public website |
+| Free models: SciCode | our own run (the Run SciCode button) |
 | Free models: speed | a local probe on your Go key (the Measure speed button) |
 | Free-model list | the opencode Go catalogue, no key needed |
 
@@ -221,10 +242,16 @@ window says so. The Refresh button re-reads it.
 
 ### Measuring speed honestly
 
-The probe asks each free model to count from 1 to 250 and divides the output
-tokens by the **generation window** — first event to last event, so time to
-first token is excluded. That is how Artificial Analysis measures it, which is
-the only reason the two numbers can share an axis.
+The probe asks each free model to count, three times, and divides its output
+tokens by the **generation window** — first streamed token to last, so time to
+first token is excluded — then takes the median. That is how Artificial
+Analysis measures it, which is the only reason the two numbers can share an
+axis.
+
+The window starts at the first token **of any kind**. A reasoning model streams
+its hidden thinking first, and the token count includes it; timing only the
+visible answer divided all of it by the last second of output, and showed
+Space Bunny at 261 tok/s (621 in a single sample) when it runs at about 140.
 
 Two things it refuses to do:
 
@@ -249,9 +276,9 @@ omarchy plugin add https://github.com/villenull/OpenCodeGoWatcher --enable
 disk.
 
 The second command checks the setup and changes nothing: your opencode Go key
-(the free models answer with it), the `opencode` CLI and a Zen sign-in (the
-grader runs through them), and whether speed and Omniscience have been run.
-There is nothing to configure.
+(the free models answer with it), bubblewrap (SciCode runs model-written code
+under it), whether SciCode's data is downloaded, and whether speed and SciCode
+have been run. There is nothing to configure.
 
 ```bash
 .../bin/opencode-go-watcher-setup                 # check the setup
@@ -399,16 +426,13 @@ $P/bin/opencode-go-watcher-free-for-all --force   # skip the six-hour cache
 $P/bin/opencode-go-watcher-free-for-all-speed
 $P/bin/opencode-go-watcher-free-for-all-speed --model space-bunny-free
 
-# the Omniscience eval
-$P/bin/opencode-go-watcher-free-for-all-eval start        # 100 questions per model
-$P/bin/opencode-go-watcher-free-for-all-eval start 600    # the whole public set
+# the SciCode benchmark
+$P/bin/opencode-go-watcher-free-for-all-eval start                          # every free model
+$P/bin/opencode-go-watcher-free-for-all-eval start --model space-bunny-free # just one
 $P/bin/opencode-go-watcher-free-for-all-eval status       # progress
-$P/bin/opencode-go-watcher-free-for-all-eval cancel       # stop after calls in flight
+$P/bin/opencode-go-watcher-free-for-all-eval cancel       # stop; the next start resumes
+$P/bin/opencode-go-watcher-free-for-all-eval verify       # check the harness on SciCode's official solutions
 ```
-
-`FFA_GRADER_MODEL` overrides the grader, as an `opencode run -m` model id. The
-default is `opencode/big-pickle`: free on Zen, and not one of the models being
-graded, because a free model grading itself is not a measurement.
 
 ## When the tab is missing
 
@@ -439,7 +463,7 @@ missing tab appear once the data is there.
 
 ```bash
 ./test/usage-test.sh        # 16 — the usage record and the limits endpoint
-./test/free-for-all-test.py # 111 — the ported free-for-all logic
+./test/free-for-all-test.py # 167 — the charts, the SciCode harness and the speed probe
 ```
 
 Neither touches the network, and neither writes outside a temporary directory —
@@ -479,19 +503,16 @@ What changed in the port, beyond the move to Python:
 - **The speed probe stopped publishing artefacts.** See *Measuring speed
   honestly* above; the original's identical-prompt samples were hitting the
   prompt cache.
-- **Placeholder substitution is a single pass.** `grader_prompt` chained three
-  `.replace()` calls, so a question or answer containing a literal `{criterion}`
-  was silently rewritten. The grader prompt is now substituted in one pass that
-  does not rescan what it inserts.
 - **Every write is atomic, and the AA key file is `0600`.** Four of the original's
   five data files were written in place, so a reader landing mid-write saw
   truncated JSON, and the one holding the API key was created without a mode.
 - **An empty chart says so.** With no AA key the block rendered as a blank card,
   which read as broken rather than as nothing measured yet.
 
-The grader rubric is copied byte-for-byte from the original, which took it from
-`huggingface/lighteval`'s `aa_omniscience` task; a test asserts that, because
-reformatting it changes grader behaviour and therefore the published index.
+The port originally measured the free models on AA-Omniscience, a knowledge
+quiz graded by Big Pickle on a 100-question sample. Version 1.3 replaced it with
+SciCode: it is about writing code, it is graded by running tests rather than by
+another model, and the full 288-step run matches what AA publishes.
 
 
 The collector is ported from

@@ -7,16 +7,17 @@ import qs.Ui
 import "."
 
 // The free-model charts window: how the free models on your OpenCode Go plan
-// compare, on intelligence and on output speed, with a button to run the
-// Omniscience evaluation that produces our own intelligence numbers.
+// compare with your orchestrators on SciCode and on output speed, with buttons
+// to run the SciCode benchmark and the speed probe that produce our own numbers
+// for the free models.
 //
 // Summon it with:
 //   omarchy-shell shell summon io.github.villenull.opencode-go-watcher '{}'
 //
 // Everything drawn here comes out of one JSON file written by
 // bin/opencode-go-watcher-free-for-all, so opening and scrolling never waits
-// on the network. A long eval runs in its own detached process; this window only
-// polls its state file.
+// on the network. A SciCode run is hours long and runs in its own detached
+// process; this window only polls its state file.
 Item {
   id: root
 
@@ -170,7 +171,6 @@ Item {
   readonly property var speedBlocks: (snapshot && snapshot.rows && snapshot.rows.speed) ? snapshot.rows.speed : []
   readonly property var freeModels: (snapshot && snapshot.freeModels) ? snapshot.freeModels : []
   readonly property var warnings: (snapshot && snapshot.warnings) ? snapshot.warnings : []
-  readonly property var summary: (snapshot && snapshot.summary) ? snapshot.summary : []
 
   // Which of the three operations in the Benchmark box still owe us a result for
   // at least one free model. The snapshot computes this per model rather than
@@ -221,10 +221,10 @@ Item {
   // Sized so the header, the free-model list, both ten-row charts, the warnings
   // and the attribution all fit at once: the whole point of a comparison view is
   // being able to see both charts together, and scrolling defeats that.
-  readonly property int boxW: Math.min(1080, screenW - Style.space(80))
-  // Fits the header, three side-by-side charts of ~10 rows, the summary and the
-  // legend. Anything taller — an eval in flight, more rows — scrolls.
-  readonly property int boxH: Math.min(500, screenH - Style.space(80))
+  readonly property int boxW: Math.min(800, screenW - Style.space(80))
+  // Fits the header, two side-by-side charts of ~10 rows and the legend.
+  // Anything taller — a run in flight, more rows — scrolls.
+  readonly property int boxH: Math.min(440, screenH - Style.space(80))
   // A FloatingWindow, not a PanelWindow, and that is load-bearing. Omarchy's own
   // centred windows are FloatingWindows: they are real toplevels, so Hyprland
   // makes one the active window and SUPER + W — which is
@@ -325,7 +325,7 @@ Item {
             Text {
               width: parent.width
               visible: (root.evalState.running && root.totalQuestions > 0) ? true : false
-              text: Math.round(root.progress * 100) + "% · " + root.currentQuestion + "/" + root.totalQuestions + " graded"
+              text: Math.round(root.progress * 100) + "% · " + root.currentQuestion + "/" + root.totalQuestions + " sub-problems"
               color: root.textAccent
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
@@ -386,7 +386,7 @@ Item {
               }
 
               Button {
-                text: root.evalState.running ? "Cancel" : "Run Omniscience"
+                text: root.evalState.running ? "Cancel" : "Run SciCode"
                 bordered: true
                 enabled: !evalAction.running
                 onClicked: root.evalState.running ? root.cancelEval() : root.startEval()
@@ -432,7 +432,7 @@ Item {
           PanelSeparator { width: parent.width }
 
           // ---------------------------------------------------------- charts
-          // Omniscience | AA Intelligence Index | Output speed, side by side.
+          // SciCode | Output speed, side by side.
           Row {
             id: charts
             width: parent.width
@@ -450,25 +450,6 @@ Item {
                 textSoft: root.textSoft
                 textFaint: root.textFaint
                 accentColor: root.textAccent
-              }
-            }
-          }
-
-          // --------------------------------------------------------- summary
-          Column {
-            width: parent.width
-            spacing: Style.space(2)
-            visible: root.summary.length > 0
-
-            Repeater {
-              model: root.summary
-              Text {
-                width: parent.width
-                wrapMode: Text.Wrap
-                text: modelData
-                color: root.textAccent
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
               }
             }
           }

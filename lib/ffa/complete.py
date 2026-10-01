@@ -76,23 +76,34 @@ def extract_text(protocol: str, body: Any) -> str:
   return ""
 
 
-def _build_body(protocol: str, model: str, prompt: str, max_tokens: int) -> dict[str, Any]:
+def _build_body(protocol: str, model: str, prompt: str, max_tokens: int,
+                effort: str | None = None) -> dict[str, Any]:
+  """`effort` is the reasoning effort, as OpenCode's own variants send it
+  (`reasoningEffort`): `reasoning_effort` on chat, `reasoning.effort` on
+  responses. The messages protocol has no equivalent, so it is left out."""
   if protocol == "responses":
-    return {"model": model, "input": prompt, "max_output_tokens": max_tokens}
+    body: dict[str, Any] = {"model": model, "input": prompt, "max_output_tokens": max_tokens}
+    if effort:
+      body["reasoning"] = {"effort": effort}
+    return body
   # `messages` and `chat` happen to share a body shape here; kept as two
   # branches so a future divergence is a one-line change.
-  return {
+  body = {
     "model": model,
     "max_tokens": max_tokens,
     "messages": [{"role": "user", "content": prompt}],
   }
+  if effort and protocol == "chat":
+    body["reasoning_effort"] = effort
+  return body
 
 
-def complete(api_key: str, model: str, prompt: str, max_tokens: int, timeout: int = 120) -> str:
+def complete(api_key: str, model: str, prompt: str, max_tokens: int, timeout: int = 120,
+             effort: str | None = None) -> str:
   protocol = protocol_for(model)
   request = urllib.request.Request(
     endpoint_for(model),
-    data=json.dumps(_build_body(protocol, model, prompt, max_tokens)).encode("utf-8"),
+    data=json.dumps(_build_body(protocol, model, prompt, max_tokens, effort)).encode("utf-8"),
     headers={
       "authorization": f"Bearer {api_key}",
       "content-type": "application/json",

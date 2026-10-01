@@ -1,14 +1,19 @@
 #!/usr/bin/python3
-# omarchy:summary=Start, watch, or cancel the Omniscience eval
-# omarchy:args=[start|status|cancel|run] [question-limit]
+# omarchy:summary=Start, watch, or cancel the SciCode benchmark
+# omarchy:args=[start|status|cancel|verify|run] [--model <id>]...
 # omarchy:hidden=true
-"""Drive the AA-Omniscience evaluation of every free model.
+"""Drive the SciCode benchmark of every free model.
 
-A run is 100 questions x N free models x 2 LLM calls — about 400 calls and
-7-10 minutes, all free. `start` validates the request, writes the initial
-state, and hands the work to a detached process, so closing the window or
-reloading the shell cannot kill a run in progress. The window then polls
-`status` and reads progress from the state file.
+A run is SciCode's 288 scored sub-problems per free model: one LLM call each,
+plus running the code it writes against SciCode's tests — an hour or more per
+model, all free. The first run also downloads SciCode's test data (1 GB) and
+its Python packages (~150 MB). `start` validates the request, writes the
+initial state, and hands the work to a detached process, so closing the window
+or reloading the shell cannot kill a run in progress; an interrupted run picks
+up where it stopped. The window polls `status`.
+
+`verify` runs SciCode's official practice solutions through the same harness:
+they should pass (48 of 50 do; two are broken in SciCode's own data).
 """
 
 from __future__ import annotations
@@ -20,14 +25,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from ffa import eval as eval_mod  # noqa: E402
+from ffa import eval as eval_mod, scicode  # noqa: E402
 
 
 def main() -> int:
-  parser = argparse.ArgumentParser(description="Start, watch, or cancel the Omniscience eval")
-  parser.add_argument("action", choices=["start", "status", "cancel", "run"])
-  parser.add_argument("limit", nargs="?", type=int, help="questions per model (default: 100)")
-  parser.add_argument("--model", action="append", dest="models", help="grade only this free model (repeatable)")
+  parser = argparse.ArgumentParser(description="Start, watch, or cancel the SciCode benchmark")
+  parser.add_argument("action", choices=["start", "status", "cancel", "verify", "run"])
+  parser.add_argument("--model", action="append", dest="models", help="benchmark only this free model (repeatable)")
   args = parser.parse_args()
 
   if args.action == "status":
@@ -37,19 +41,24 @@ def main() -> int:
   if args.action == "cancel":
     state = eval_mod.read_state()
     if not state.get("running"):
-      print("no eval run is in progress", file=sys.stderr)
+      print("no SciCode run is in progress", file=sys.stderr)
       return 1
     eval_mod.request_cancel()
-    print("cancelling; the run stops after the calls in flight finish")
+    print("cancelling; the run stops after the steps in flight finish, and resumes from there next time")
+    return 0
+
+  if args.action == "verify":
+    passed, total = scicode.verify()
+    print(f"{passed}/{total} official practice solutions pass")
     return 0
 
   if args.action == "run":
     # Internal: the detached process `start` spawns. Not a user-facing verb.
-    eval_mod.run(args.limit, args.models)
+    eval_mod.run(args.models)
     return 0
 
   try:
-    started = eval_mod.start(args.limit, args.models)
+    started = eval_mod.start(args.models)
   except Exception as error:  # noqa: BLE001 - shown in the window
     print(f"opencode-go-watcher-free-for-all-eval: {error}", file=sys.stderr)
     return 1

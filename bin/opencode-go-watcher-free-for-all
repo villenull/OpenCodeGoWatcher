@@ -4,10 +4,9 @@
 # omarchy:hidden=true
 """Build the snapshot the free-for-all window draws, and print it as JSON.
 
-Reads the opencode Go catalogue, the Artificial Analysis leaderboard, the last
-speed probe, and the newest Omniscience grade per model, then merges them into
-the two chart cards. Cached for six hours because one build can cost up to
-twelve paginated requests against AA's 100 requests/24h free tier.
+Reads the opencode Go catalogue, the Artificial Analysis website, the last
+speed probe, and the newest SciCode result per model, then merges them into
+the two charts. Cached for six hours; the AA page itself is cached for a day.
 """
 
 from __future__ import annotations

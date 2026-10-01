@@ -27,8 +27,9 @@ if [[ -f $RECORD ]]; then
 fi
 
 # The scan cache, the stale-limits cache, and everything the free-model charts
-# accumulate: the snapshot, the speed probe, the Omniscience grades and run
-# state, and the cached question set. All of it is re-derivable, so it goes.
+# accumulate: the snapshot, the speed probe, the SciCode results and run state,
+# and SciCode's test data and Python environment (~1.2 GB). All of it is
+# re-derivable, so it goes.
 if [[ -d $CHARTS_DIR ]]; then
   rm -rv "$CHARTS_DIR"
   removed=1

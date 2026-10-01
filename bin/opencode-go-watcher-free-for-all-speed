@@ -4,7 +4,7 @@
 # omarchy:hidden=true
 """Measure output tokens/second for each free model and cache the result.
 
-Two samples per model, median, with the measurement window starting at the first
+Three samples per model, median, with the measurement window starting at the first
 byte so time-to-first-token is excluded — that is how Artificial Analysis
 measures it, and it is the only reason the two numbers can share one axis.
 """

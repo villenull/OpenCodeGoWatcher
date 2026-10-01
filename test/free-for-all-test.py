@@ -5,10 +5,10 @@ Three things here are easy to get subtly wrong and expensive to get wrong:
 
   * the fuzzy join, because a wrong match publishes a fabricated benchmark
     number as though it were real;
-  * the grading arithmetic, because the Omniscience index is calibration rather
-    than accuracy and a sign error inverts the whole chart;
-  * the eval's progress readout, which was wrong in the original and is easy to
-    regress.
+  * the SciCode prompt and step files, because a drift from the official
+    harness makes our score incomparable with the one AA publishes;
+  * the run's progress, skipping and resuming, and the speed timing, which
+    once reported reasoning models several times too fast.
 
 No network. The fetchers are replaced with fixtures, so the suite passes on a
 machine with no keys and no subscription.
@@ -17,13 +17,14 @@ machine with no keys and no subscription.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from ffa import aaweb, complete, dashboard, eval as eval_mod, match, omniscience, opencode, speed, store  # noqa: E402
+from ffa import aaweb, complete, dashboard, eval as eval_mod, match, opencode, scicode, speed, store  # noqa: E402
 
 PASSED = 0
 FAILED = 0
@@ -118,6 +119,12 @@ check("non-text message parts are skipped", "a", complete.extract_text(
   "messages", {"content": [{"type": "image"}, {"type": "text", "text": "a"}]}))
 check("chat choices are read", "hey", complete.extract_text(
   "chat", {"choices": [{"message": {"content": " hey "}}]}))
+check("chat sends effort as reasoning_effort", "medium",
+      complete._build_body("chat", "space-bunny-free", "p", 10, "medium")["reasoning_effort"])
+check("responses sends it as reasoning.effort", {"effort": "medium"},
+      complete._build_body("responses", "gpt-6-astra", "p", 10, "medium")["reasoning"])
+check("no effort sends nothing extra", False, "reasoning_effort" in complete._build_body("chat", "m", "p", 10))
+check("messages has no effort field", False, "reasoning_effort" in complete._build_body("messages", "minimax-m2", "p", 10, "medium"))
 check("an empty body is empty text", "", complete.extract_text("chat", {}))
 check("a null body is empty text", "", complete.extract_text("chat", None))
 check("a missing message does not raise", "", complete.extract_text("chat", {"choices": [{}]}))
@@ -138,9 +145,9 @@ check("an unrelated bracket is not a config", "", dashboard.config_label("Gemma 
 check("a size is not an effort", "", dashboard.config_label("Meta Spark (3.3B max)"))
 
 section("dashboard: AA's top models for context")
-def record(slug, name, release, intelligence, deprecated=False, speed=None, omni=None):
+def record(slug, name, release, intelligence, deprecated=False, speed=None, sci=None):
   return {"slug": slug, "name": name, "releaseSlug": release, "intelligence": intelligence,
-          "tokensPerSecond": speed, "omniscience": omni, "deprecated": deprecated}
+          "tokensPerSecond": speed, "scicode": sci, "deprecated": deprecated}
 
 VARIANTS = [
   record("opus-max", "Claude Opus 5.5 (Adaptive Reasoning, Max Effort)", "opus", 57.6),
@@ -173,85 +180,84 @@ def rsc(payload: str) -> str:
 PAGE = rsc(
   '{"id":"11111111-1111-1111-1111-111111111111","slug":"opus-medium","name":"Claude Opus 5.5 (Medium Effort)",'
   '"release":{"slug":"opus","name":"Claude Opus 5.5"},"deprecated":false,"intelligenceIndex":51.2,'
-  '"omniscience":null,"intelligenceIndexEvaluations":[{"slug":"omniscience","score":40.3}],'
+  '"intelligenceIndexEvaluations":[{"slug":"omniscience","score":40.3},{"slug":"scicode","score":0.5926}],'
   '"timescaleData":{"medianOutputSpeed":74.0}},'
   '{"id":"22222222-2222-2222-2222-222222222222","slug":"old","name":"Old (max)",'
-  '"release":{"slug":"old","name":"Old"},"deprecated":true,"intelligenceIndex":30.5,"omniscience":-13.1}'
+  '"release":{"slug":"old","name":"Old"},"deprecated":true,"intelligenceIndex":30.5}'
 )
 parsed = aaweb.parse_models(PAGE)
 check("both records are read", ["old", "opus-medium"], sorted(parsed))
 check("intelligence is read", 51.2, parsed["opus-medium"]["intelligence"])
 check("speed comes from the timescale data", 74.0, parsed["opus-medium"]["tokensPerSecond"])
-check("omniscience prefers the evaluation list", 40.3, parsed["opus-medium"]["omniscience"])
-check("and falls back to the top-level field", -13.1, parsed["old"]["omniscience"])
+check("SciCode comes from the evaluation list, as a share", 0.5926, parsed["opus-medium"]["scicode"])
+check("a model without it has None", None, parsed["old"]["scicode"])
 check("the release is recorded", "opus", parsed["opus-medium"]["releaseSlug"])
 check("deprecation is read", True, parsed["old"]["deprecated"])
 check("a missing speed is None", None, parsed["old"]["tokensPerSecond"])
 check("a page with no payload has no models", {}, aaweb.parse_models("<html></html>"))
 
 
-# ----------------------------------------------------------- omniscience.py
+# --------------------------------------------------------------- scicode.py
 
-section("omniscience: grading")
-check("a bare letter grades itself", "A", omniscience.parse_grade("A"))
-check("a verbose verdict is read", "B", omniscience.parse_grade("B: INCORRECT"))
-check("surrounding chatter is ignored", "C", omniscience.parse_grade("I think the answer is C"))
-check("lowercase is accepted", "D", omniscience.parse_grade("d"))
-check("a malformed reply scores as not attempted", "D", omniscience.parse_grade("no idea, sorry"))
-check("an empty reply scores as not attempted", "D", omniscience.parse_grade(""))
-check("ABCD is not a grade", "D", omniscience.parse_grade("ABCD"))
+section("scicode: the official harness, reproduced")
+PROBLEM = {
+  "problem_id": "9",
+  "required_dependencies": "import numpy as np",
+  "sub_steps": [
+    {"step_number": "9.1", "step_description_prompt": "Add.", "step_background": "Background: sums.",
+     "function_header": "def add(a, b):\n    \"\"\"Add.\"\"\"", "return_line": "    return c",
+     "test_cases": ["assert np.allclose(add(1, 2), target)", "assert np.allclose(add(2, 2), target)"]},
+    {"step_number": "9.2", "step_description_prompt": "Double.", "step_background": "Background: twice.",
+     "function_header": "def double(a):", "return_line": "    return d",
+     "test_cases": ["assert double(2) == target"]},
+  ],
+}
+prompt, prefix = scicode.build_prompt(PROBLEM, 2, ["def add(a, b):\n    return a + b"])
+check("the background template is AA's", True, prompt.startswith(
+  "PROBLEM DESCRIPTION:\nYou will be provided with problem steps along with background knowledge"))
+check("earlier steps carry their background", True, "Add.\nBackground: sums." in prompt)
+check("and the model's own code for them", True, "def add(a, b):\n    return a + b" in prompt)
+check("the next step carries header and return line", True, "def double(a):\n\n    return d" in prompt)
+check("the dependencies are listed", True, "DEPENDENCIES:" in prompt and "import numpy as np" in prompt)
+check("no separator trails the last earlier step", False, "------\n\nNEXT STEP" in prompt)
+check("the step file starts with the dependencies and earlier code", "import numpy as np\ndef add(a, b):\n    return a + b\n", prefix)
+first, first_prefix = scicode.build_prompt(PROBLEM, 1, [])
+check("step one has no earlier steps", True, "PROBLEM STEPS AND FUNCTION CODE:" in first and "------" not in first)
 
-section("omniscience: the index is calibration, not accuracy")
-all_correct = omniscience.score_grades(["A"] * 100)
-check("all correct is +1", 1.0, all_correct["index"])
-check("all correct is 100% accurate", 1.0, all_correct["accuracy"])
-check("all correct answered everything", 100, all_correct["answered"])
+check("code is taken from the python block", "\ndef f():\n    return 1\n",
+      scicode.extract_python_script("Here:\n```python\nimport os\ndef f():\n    return 1\n```\nDone."))
+check("a bare fence works too", "\nx = 1\n", scicode.extract_python_script("```\nx = 1\n```"))
+check("no fence keeps the whole reply", "y = 2", scicode.extract_python_script("y = 2"))
+check("imports are dropped, as the harness does", False,
+      "import" in scicode.extract_python_script("```python\nfrom math import pi\nimport numpy as np\nz = pi\n```"))
+check("a named function is cut out of a file", "def b():\n    return 2",
+      scicode.get_function_from_code("def a():\n    return 1\ndef b():\n    return 2", "b"))
+check("unparsable code comes back whole", "def (:", scicode.get_function_from_code("def (:", "b"))
+check("the function name is read from a header", "add", scicode.extract_function_name("def add(a, b):"))
+check("so is a class name", "Maxwell", scicode.extract_function_name("class Maxwell(object):"))
 
-all_wrong = omniscience.score_grades(["B"] * 100)
-check("all wrong is -1", -1.0, all_wrong["index"])
-check("all wrong is 0% accurate", 0.0, all_wrong["accuracy"])
-check("all wrong is 100% hallucination", 1.0, all_wrong["hallucinationRate"])
+script = scicode.test_script(PROBLEM, 1, "CODE")
+check("the test script loads the step's targets", True,
+      "targets = process_hdf5_to_tuple('9.1', 2)" in script)
+check("each case gets its own target", True,
+      script.index("target = targets[0]") < script.index("add(1, 2)") < script.index("target = targets[1]"))
 
-all_refused = omniscience.score_grades(["D"] * 100)
-check("all refused is 0, not -1", 0.0, all_refused["index"])
-check("all refused answered nothing", 0, all_refused["answered"])
-check("but still counts as hallucination", 1.0, all_refused["hallucinationRate"])
-
-mixed = omniscience.score_grades(["A", "B", "C", "D"])
-check("partial answers score the same as wrong", -0.25, mixed["index"])
-check("mixed accuracy", 0.25, mixed["accuracy"])
-check("mixed hallucination is 1 - accuracy", 0.75, mixed["hallucinationRate"])
-check("empty input is not a crash", 0, omniscience.score_grades([])["total"])
-
-section("omniscience: prompts")
-item = {"domain": "Finance", "topic": "Accounting", "question": "Q?", "answer": "A"}
-answer = omniscience.answer_prompt(item)
-check("the answer prompt names the domain", True, "Finance" in answer)
-check("and the topic", True, "Accounting" in answer)
-check("and invites refusal", True, "better that you say this" in answer)
-check("and carries the question", True, answer.endswith("Q?"))
-
-grader = omniscience.grader_prompt(item, "my prediction")
-check("the grader gets the question", True, "\nQuestion: Q?\n" in grader)
-check("the grader gets the gold target", True, "Gold target: A\n" in grader)
-check("the grader gets the prediction", True, "Predicted answer: my prediction" in grader)
-check("no placeholder survives", False, "{question}" in grader or "{criterion}" in grader or "{answer}" in grader)
-check("the rubric is intact", True, "NOT_ATTEMPTED" in grader and "PARTIAL_ANSWER" in grader)
-check("all seven examples are present", 7, grader.count("Example "))
-check("the rubric is the lighteval one", True, "last significant figure" in grader)
-injected = omniscience.grader_prompt(
-  {"domain": "D", "topic": "T", "question": "What is {criterion}?", "answer": "GOLD"}, "PRED")
-check("a question containing a placeholder is left alone", True, "What is {criterion}?" in injected)
-check("and the gold target did not leak into it", False, "What is GOLD?" in injected)
-check("the real gold target still went in", True, "Gold target: GOLD\n" in injected)
-
-section("omniscience: the rubric was copied byte for byte")
-check("every example survived the port", 7, omniscience.GRADER_PREAMBLE.count("Example "))
-check("the sign-off survived", True,
-      omniscience.GRADER_PREAMBLE.rstrip().endswith('Just return the letters "A", "B", "C", or "D", with no text around it.'))
-check("the typo in example 4 is preserved", True, "barn-façade" in omniscience.GRADER_PREAMBLE)
-check("the awkward case is preserved", True,
-      "A pretrainer's guide to training data" in omniscience.GRADER_PREAMBLE)
+section("scicode: what is scored")
+real = [{"problem_id": pid, "sub_steps": [{}] * n} for pid, n in (("13", 6), ("62", 3), ("76", 4), ("1", 2))]
+check("the three given steps are not scored", 6 + 3 + 4 + 2 - 3, scicode.scored_step_count(real))
+check("the test split scores 288 steps", 288, scicode.SCORED_STEPS)
+check("each given step's code ships with the plugin", True,
+      all((scicode.SUPPORT_DIR / "steps" / f"{pid}.{n}.txt").exists() for pid, n in scicode.GIVEN_STEPS))
+shim = (scicode.SUPPORT_DIR / "sitecustomize.py").read_text()
+check("the sandbox puts back scipy's simps, which two problems import", True, '"simps": _simps' in shim)
+check("and numpy's trapz", True, '"trapz": _np.trapezoid' in shim)
+check("the vendored helpers read the targets path from the environment", True,
+      'os.environ.get("SCICODE_H5"' in (scicode.SUPPORT_DIR / "scicode" / "parse" / "parse.py").read_text())
+result = eval_mod.score({"a": {"status": "pass"}, "b": {"status": "fail"}, "c": {"status": "timeout"},
+                         "d": {"status": "skipped"}})
+check("a timeout counts as a failure", 1 / 3, result["score"])
+check("a skipped step is left out", 3, result["attempted"])
+check("and reported", 1, result["skipped"])
 
 
 # ------------------------------------------------------------- dashboard.py
@@ -283,82 +289,78 @@ check("an empty block is not a divide by zero", {"min": 0.0, "max": 0.0, "zero":
 section("dashboard: snapshot assembly")
 
 
-def build_with(free_models, catalogue, grades=(), speed_rows=()):
+def build_with(free_models, catalogue, results=(), speed_rows=()):
   """Snapshot assembly with the network fetchers replaced. `catalogue` is a
   list of aaweb-shaped records."""
   original_fetch, original_aa, original_history, original_speed = (
     opencode.fetch_go_models, dashboard.aaweb.fetch_models,
-    store.read_eval_history, dashboard.store.read_data,
+    store.read_scicode_history, dashboard.store.read_data,
   )
   try:
     opencode.fetch_go_models = lambda: free_models
     dashboard.aaweb.fetch_models = lambda force=False: {
       "models": {model["slug"]: model for model in catalogue}, "fetchedAt": 1.0, "warning": None}
-    store.read_eval_history = lambda: list(grades)
+    store.read_scicode_history = lambda: list(results)
     dashboard.store.read_data = lambda name: ({"probedAt": "2026-01-01T00:00:00Z", "rows": list(speed_rows)}
                                                if name == "speed" else None)
     return dashboard.build_snapshot(force=True)
   finally:
     opencode.fetch_go_models, dashboard.aaweb.fetch_models = original_fetch, original_aa
-    store.read_eval_history, dashboard.store.read_data = original_history, original_speed
+    store.read_scicode_history, dashboard.store.read_data = original_history, original_speed
 
 
 FREE = [{"id": "space-bunny-free", "label": "Space Bunny Free", "suffixed": True, "note": "zero-retention"},
         {"id": "longcat-2.5-preview-free", "label": "Longcat 2.5 Preview Free", "suffixed": True, "note": "zero-retention"}]
 
 ORCHESTRATORS = [
-  record("claude-opus-5-5-medium", "Claude Opus 5.5 (Adaptive Reasoning, Medium Effort)", "claude-opus-5-5", 51.2, speed=74.0, omni=40.3),
-  record("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Adaptive Reasoning, Medium Effort)", "claude-sonnet-5-5", 40.7, speed=91.4, omni=20.1),
-  record("gpt-6-1-sol-medium", "GPT-6.1 Sol (medium)", "gpt-6-1-sol", 47.8, speed=60.7, omni=40.0),
-  record("gpt-6-astra-medium", "GPT-6 Astra (medium)", "gpt-6-astra", 49.6, speed=46.3, omni=42.2),
+  record("claude-opus-5-5-medium", "Claude Opus 5.5 (Adaptive Reasoning, Medium Effort)", "claude-opus-5-5", 51.2, speed=74.0, sci=0.593),
+  record("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Adaptive Reasoning, Medium Effort)", "claude-sonnet-5-5", 40.7, speed=91.4, sci=0.40),
+  record("gpt-6-1-sol-medium", "GPT-6.1 Sol (medium)", "gpt-6-1-sol", 47.8, speed=60.7, sci=0.55),
+  record("gpt-6-astra-medium", "GPT-6 Astra (medium)", "gpt-6-astra", 49.6, speed=46.3, sci=0.542),
 ]
 TOPS = [
-  record("claude-opus-5-5", "Claude Opus 5.5 (Adaptive Reasoning, Max Effort)", "claude-opus-5-5", 57.6, speed=92.0, omni=46.4),
-  record("fable", "Claude Fable 5.1 (max)", "fable", 53.4, speed=69.0, omni=43.5),
+  record("claude-opus-5-5", "Claude Opus 5.5 (Adaptive Reasoning, Max Effort)", "claude-opus-5-5", 57.6, speed=92.0, sci=0.61),
+  record("fable", "Claude Fable 5.1 (max)", "fable", 53.4, speed=69.0, sci=0.58),
 ]
 
 bare = build_with(FREE, [])
-check("the smarts blocks are Omniscience then AA's index", ["omniscience", "aa-index"],
-      [b["scale"] for b in bare["rows"]["intelligence"]])
-check("with no AA data they are empty", [0, 0], [len(b["rows"]) for b in bare["rows"]["intelligence"]])
+check("the smarts chart is SciCode alone", ["scicode"], [b["scale"] for b in bare["rows"]["intelligence"]])
+check("with no AA data it is empty", [0], [len(b["rows"]) for b in bare["rows"]["intelligence"]])
 check("both free models are unmatched", 2, len(bare["unmatched"]))
-check("and there is nothing to summarise", [], bare["summary"])
+check("there are no summary lines any more", False, "summary" in bare)
 
 full = build_with(
   FREE, ORCHESTRATORS + TOPS,
-  grades=[{"opencodeId": "space-bunny-free", "index": 0.12, "accuracy": 0.41,
-           "hallucinationRate": 0.59, "answered": 80, "total": 100},
-          {"opencodeId": "longcat-2.5-preview-free", "index": -0.05, "accuracy": 0.3,
-           "hallucinationRate": 0.7, "answered": 70, "total": 100}],
-  speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 475, "tokens": 561}],
+  results=[{"opencodeId": "space-bunny-free", "score": 0.3125, "passed": 90, "attempted": 288, "skipped": 0},
+           {"opencodeId": "longcat-2.5-preview-free", "score": 0.05, "passed": 14, "attempted": 280, "skipped": 8}],
+  speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 162, "tokens": 1000}],
 )
-blocks = {block["scale"]: block for block in full["rows"]["intelligence"]}
-omni_roles = {row["key"]: row["role"] for row in blocks["omniscience"]["rows"]}
-check("the orchestrators are on the Omniscience chart", 4, list(omni_roles.values()).count("orchestrator"))
-check("so are both free models", 2, list(omni_roles.values()).count("free"))
-check("AA's top model is context", "context", omni_roles.get("aa:fable"))
-check("an orchestrator's own max entry is not repeated", False, "aa:claude-opus-5-5" in omni_roles)
-free_omni = [row for row in blocks["omniscience"]["rows"] if row["role"] == "free"]
-check("our index is expressed in points", 12.0, [r["value"] for r in free_omni if r["opencodeId"] == "space-bunny-free"][0])
-check("a self-measured row is marked self", "self", free_omni[0]["source"])
-check("the note carries the question count", True, "100 questions" in free_omni[0]["note"])
+sci_block = full["rows"]["intelligence"][0]
+sci_roles = {row["key"]: row["role"] for row in sci_block["rows"]}
+check("the orchestrators are on the SciCode chart", 4, list(sci_roles.values()).count("orchestrator"))
+check("so are both free models", 2, list(sci_roles.values()).count("free"))
+check("AA's top model is context", "context", sci_roles.get("aa:fable"))
+check("an orchestrator's own max entry is not repeated", False, "aa:claude-opus-5-5" in sci_roles)
+check("AA's share is shown as a percentage", 59.3,
+      [r["value"] for r in sci_block["rows"] if r["key"] == "aa:claude-opus-5-5-medium"][0])
+free_sci = {r["opencodeId"]: r for r in sci_block["rows"] if r["role"] == "free"}
+check("our score is a percentage too", 31.2, free_sci["space-bunny-free"]["value"])
+check("a self-measured row is marked self", "self", free_sci["space-bunny-free"]["source"])
+check("the note carries the pass count", True, "90/288 sub-problems" in free_sci["space-bunny-free"]["note"])
+check("and any steps left out", True, "8 unanswered" in free_sci["longcat-2.5-preview-free"]["note"])
+effort_full = build_with(FREE, ORCHESTRATORS, results=[{"opencodeId": "space-bunny-free", "score": 0.3,
+                                                        "passed": 86, "attempted": 288, "effort": "medium"}])
+check("a free model's row shows the effort it ran at", "medium",
+      [r for r in effort_full["rows"]["intelligence"][0]["rows"] if r.get("opencodeId") == "space-bunny-free"][0]["configLabel"])
 check("the orchestrator's effort shows as its config", "medium",
-      [r for r in blocks["aa-index"]["rows"] if r["key"] == "aa:claude-opus-5-5-medium"][0]["configLabel"])
+      [r for r in sci_block["rows"] if r["key"] == "aa:claude-opus-5-5-medium"][0]["configLabel"])
 check("rows are sorted descending", True,
-      all(a["value"] >= b["value"] for a, b in zip(blocks["omniscience"]["rows"], blocks["omniscience"]["rows"][1:])))
-check("a negative score keeps its sign", -5.0,
-      [r["value"] for r in free_omni if r["opencodeId"] == "longcat-2.5-preview-free"][0])
-check("so the domain goes below zero", True, blocks["omniscience"]["domain"]["min"] < 0)
+      all(a["value"] >= b["value"] for a, b in zip(sci_block["rows"], sci_block["rows"][1:])))
 
 speed_rows_out = full["rows"]["speed"][0]["rows"]
 check("the probed free model leads the speed chart", "Space Bunny Free", speed_rows_out[0]["label"])
 check("and is marked self-measured", "self", speed_rows_out[0]["source"])
 check("the orchestrators' speeds are there", 4, sum(1 for r in speed_rows_out if r["role"] == "orchestrator"))
-
-check("the summary compares a free model to the orchestrators", True,
-      any(line.startswith("Space Bunny Free: Omniscience 12 vs your orchestrators' 20–42") for line in full["summary"]))
-check("and states its speed against theirs", True, any("× their typical speed" in line for line in full["summary"]))
-check("and names the smarter free model", "Smarter free model right now: Space Bunny Free", full["summary"][-1])
 
 warned = build_with(FREE, TOPS)
 check("a missing orchestrator is called out", True,
@@ -371,29 +373,27 @@ section("dashboard: which operations still owe us a result")
 # per timestamp: measuring one of two free models has still not measured the other.
 
 never = build_with(FREE, [])
-check("with nothing run, every free model owes an intelligence score",
+check("with nothing run, every free model owes a SciCode score",
       ["space-bunny-free", "longcat-2.5-preview-free"], never["pending"]["intelligence"])
 check("and a speed measurement", ["space-bunny-free", "longcat-2.5-preview-free"], never["pending"]["speed"])
 check("AA is never flagged, because we never run it", False, "aa" in never["pending"])
 
 half = build_with(
   FREE, [],
-  grades=[{"opencodeId": "space-bunny-free", "index": 0.1, "accuracy": 0.5,
-           "hallucinationRate": 0.5, "answered": 300, "total": 600}],
+  results=[{"opencodeId": "space-bunny-free", "score": 0.3, "passed": 86, "attempted": 288}],
   speed_rows=[{"opencodeId": "space-bunny-free", "tokensPerSecond": 475, "tokens": 561}],
 )
-check("one model graded leaves only the other pending",
+check("one model benchmarked leaves only the other pending",
       ["longcat-2.5-preview-free"], half["pending"]["intelligence"])
 check("one model probed leaves only the other pending",
       ["longcat-2.5-preview-free"], half["pending"]["speed"])
 
 done = build_with(
   FREE, [],
-  grades=[{"opencodeId": model["id"], "index": 0.1, "accuracy": 0.5,
-           "hallucinationRate": 0.5, "answered": 300, "total": 600} for model in FREE],
+  results=[{"opencodeId": model["id"], "score": 0.3, "passed": 86, "attempted": 288} for model in FREE],
   speed_rows=[{"opencodeId": model["id"], "tokensPerSecond": 400, "tokens": 500} for model in FREE],
 )
-check("once every model has a grade nothing is pending", [], done["pending"]["intelligence"])
+check("once every model has a score nothing is pending", [], done["pending"]["intelligence"])
 check("and likewise for speed", [], done["pending"]["speed"])
 
 check("with no free models nothing is pending", {"intelligence": [], "speed": []},
@@ -430,70 +430,98 @@ check("and not into the real data directory", True,
       _real_state_after == _real_state_before or _live_run)
 
 section("eval: a run counts progress across every model")
-# The counter used to be defined and never called, so a run sat at 0% until it
-# finished. Run the real loop with the network replaced.
-patches = {
-  (store, "opencode_key"): lambda: ("key", "test"),
-  (eval_mod.opencode, "fetch_go_models"): lambda: [{"id": "a-free", "label": "A Free"}, {"id": "b-free", "label": "B Free"}],
-  (eval_mod.omniscience, "fetch_questions"): lambda: [
-    {"questionId": n, "domain": "D", "topic": "T", "question": f"Q{n}", "answer": "A"} for n in range(12)],
-  (eval_mod.complete_mod, "complete"): lambda key, model, prompt, tokens: "an answer",
-  (eval_mod, "grade"): lambda prompt: "A",
-}
-saved = {target: getattr(*target) for target in patches}
-history_before = len(store.read_eval_history())
+TWO_PROBLEMS = [
+  {"problem_id": "1", "required_dependencies": "", "sub_steps": [
+    {"step_number": f"1.{n}", "step_description_prompt": f"P1 step {n}", "step_background": "",
+     "function_header": f"def f{n}():", "return_line": "", "test_cases": []} for n in (1, 2, 3)]},
+  {"problem_id": "2", "required_dependencies": "", "sub_steps": [
+    {"step_number": f"2.{n}", "step_description_prompt": f"P2 step {n}", "step_background": "",
+     "function_header": f"def g{n}():", "return_line": "", "test_cases": []} for n in (1, 2)]},
+]
+
+
+def run_patched(complete_fn, test_fn=lambda script: "pass", models=None):
+  patches = {
+    (store, "opencode_key"): lambda: ("key", "test"),
+    (eval_mod.opencode, "fetch_go_models"): lambda: [{"id": "a-free", "label": "A Free"}, {"id": "b-free", "label": "B Free"}],
+    (eval_mod.scicode, "ensure_env"): lambda say: None,
+    (eval_mod.scicode, "ensure_data"): lambda say: None,
+    (eval_mod.scicode, "fetch_problems"): lambda split="test": TWO_PROBLEMS,
+    (eval_mod.scicode, "run_test"): test_fn,
+    (eval_mod.complete_mod, "complete"): complete_fn,
+    (eval_mod.time, "sleep"): lambda seconds: None,
+  }
+  saved = {target: getattr(*target) for target in patches}
+  try:
+    for (owner, name), value in patches.items():
+      setattr(owner, name, value)
+    return eval_mod.run(models)
+  finally:
+    for (owner, name), value in saved.items():
+      setattr(owner, name, value)
+
+
+history_before = len(store.read_scicode_history())
 writes = []
 original_write = eval_mod.write_state
 try:
-  for (owner, name), value in patches.items():
-    setattr(owner, name, value)
   eval_mod.write_state = lambda state: (writes.append(state.get("currentQuestion")), original_write(state))
-  final = eval_mod.run(limit=3)
+  final = run_patched(lambda key, model, prompt, tokens, timeout=0, effort=None: "```python\ndef f():\n    pass\n```")
 finally:
-  for (owner, name), value in saved.items():
-    setattr(owner, name, value)
   eval_mod.write_state = original_write
 counts = [c for c in writes if isinstance(c, int)]
 check("the run finishes", "Run complete", final["message"])
-check("it graded limit x models questions", 6, final["totalQuestions"])
-check("the counter moved during the run", True, {1, 2, 3, 4, 5} <= set(counts))
+check("it counts every step of every model", 10, final["totalQuestions"])
+check("the counter moved during the run", True, {1, 2, 3, 4, 5, 6, 7, 8, 9} <= set(counts))
 check("and never went backwards", True, counts == sorted(counts))
-check("one history entry per free model", history_before + 2, len(store.read_eval_history()))
+check("one history entry per free model", history_before + 2, len(store.read_scicode_history()))
+check("all steps passing scores 1", 1.0, store.read_scicode_history()[0]["score"])
+check("the run asks for medium effort, like the workers", "medium", store.read_scicode_history()[0]["effort"])
+check("a finished model leaves no progress file behind", False,
+      store.data_path("scicode-progress-a-free").exists())
 
-section("eval: a slow answer doesn't sink the run")
-flaky = {"calls": 0}
-def flaky_complete(key, model, prompt, tokens):
-  flaky["calls"] += 1
-  if "Q0" in prompt:
-    raise RuntimeError(f"{model} request failed: The read operation timed out")
-  if "Q1" in prompt and flaky["calls"] % 2 == 1:
-    raise RuntimeError(f"{model} request failed: reset")
-  return "an answer"
-patches = {
-  (store, "opencode_key"): lambda: ("key", "test"),
-  (eval_mod.opencode, "fetch_go_models"): lambda: [{"id": "a-free", "label": "A Free"}, {"id": "b-free", "label": "B Free"}],
-  (eval_mod.omniscience, "fetch_questions"): lambda: [
-    {"questionId": n, "domain": "D", "topic": "T", "question": f"Q{n}", "answer": "A"} for n in range(4)],
-  (eval_mod.complete_mod, "complete"): flaky_complete,
-  (eval_mod, "grade"): lambda prompt: "A",
-  (eval_mod.time, "sleep"): lambda seconds: None,
-}
-saved = {target: getattr(*target) for target in patches}
-before = len(store.read_eval_history())
-try:
-  for (owner, name), value in patches.items():
-    setattr(owner, name, value)
-  final = eval_mod.run(limit=4, models=["b-free"])
-finally:
-  for (owner, name), value in saved.items():
-    setattr(owner, name, value)
-history = store.read_eval_history()
+section("eval: each step sees the model's own earlier code")
+seen = []
+def remembering(key, model, prompt, tokens, timeout=0, effort=None):
+  seen.append(prompt)
+  step = re.search(r"NEXT STEP.*?(P\d step \d)", prompt, re.S).group(1)
+  return f"```python\ndef answer():\n    return '{step}'\n```"
+run_patched(remembering, models=["a-free"])
+third = [p for p in seen if re.search(r"NEXT STEP.*?P1 step 3", p, re.S)][0]
+check("step 3 is shown the answers to steps 1 and 2", True,
+      "return 'P1 step 1'" in third and "return 'P1 step 2'" in third)
+
+section("eval: a request that keeps failing skips the rest of its problem")
+def failing(key, model, prompt, tokens, timeout=0, effort=None):
+  if re.search(r"NEXT STEP.*?P1 step 2", prompt, re.S):
+    raise RuntimeError(f"{model} request failed: timed out")
+  return "```python\nx = 1\n```"
+before = len(store.read_scicode_history())
+final = run_patched(failing, test_fn=lambda script: "fail", models=["b-free"])
+history = store.read_scicode_history()
 check("the run still completes", "Run complete", final["message"])
-check("only the named model was graded", before + 1, len(history))
+check("only the named model was benchmarked", before + 1, len(history))
 check("and it was that model", "b-free", history[0]["opencodeId"])
-check("the question that never answered is skipped, not scored", 1, history[0]["skipped"])
-check("so the score covers the rest", 3, history[0]["total"])
-check("a question that failed once was retried and kept", 3, history[0]["answered"])
+check("the failed step and the one after it are skipped", 2, history[0]["skipped"])
+check("so three steps were scored", 3, history[0]["attempted"])
+
+section("eval: an interrupted run resumes")
+store.write_data("scicode-progress-a-free", {"dataset": scicode.DATASET_REVISION, "steps": {
+  "1.1": {"status": "pass", "code": "def f1():\n    return 'kept'"},
+  "1.2": {"status": "fail", "code": "def f2():\n    return 'kept too'"}}})
+asked = []
+def counting(key, model, prompt, tokens, timeout=0, effort=None):
+  asked.append(prompt)
+  return "```python\ny = 2\n```"
+run_patched(counting, models=["a-free"])
+check("finished steps are not asked again", 3, len(asked))
+check("and the next step builds on the saved code", True,
+      any("return 'kept too'" in p for p in asked))
+check("their results count", 1 + 3, store.read_scicode_history()[0]["passed"])
+store.write_data("scicode-progress-a-free", {"dataset": "an-older-revision", "steps": {"1.1": {"status": "pass", "code": ""}}})
+check("progress from another dataset revision is ignored", {}, eval_mod._load_progress("a-free"))
+store.data_path("scicode-progress-a-free").unlink()
+
 try:
   eval_mod._chosen([{"id": "a-free", "label": "A"}], ["nope-free"])
   check("naming an unknown model is an error", True, False)
@@ -515,40 +543,35 @@ speed.save_rows([{"opencodeId": "c-free", "tokensPerSecond": None, "error": "buf
 check("but a model never measured records its failure", "buffered",
       {row["opencodeId"]: row.get("error") for row in store.read_data("speed")["rows"]}["c-free"])
 
-section("eval: sampling and grading")
-questions = [{"questionId": n} for n in range(600)]
-sampled = eval_mod.sample_questions(questions, 100)
-check("a sample has the requested size", 100, len(sampled))
-check("it strides the whole set, not its head", True, sampled[-1]["questionId"] > 500)
-check("no limit means every question", 600, len(eval_mod.sample_questions(questions, None)))
-check("a limit past the end is the whole set", 600, len(eval_mod.sample_questions(questions, 900)))
-check("the default run is sized for Big Pickle", 100, eval_mod.DEFAULT_QUESTIONS)
-check("the grader is Big Pickle on Zen", "opencode/big-pickle", eval_mod.GRADER_MODEL)
+section("speed: reasoning tokens are timed from the first token")
+# A reasoning model streams its thinking first. The token count includes it, so
+# the window has to as well: timing only the visible answer reported Space
+# Bunny at 621 tok/s.
+class _Stream:
+  def __init__(self, lines):
+    self.data = "".join(f"data: {json.dumps(line)}\n\n" for line in lines).encode() + b"data: [DONE]\n\n"
+    self.chunks = [self.data[i:i + 40] for i in range(0, len(self.data), 40)] + [b""]
+  def read(self, size):
+    return self.chunks.pop(0)
+  def __enter__(self):
+    return self
+  def __exit__(self, *exc):
+    return False
 
-class _Done:
-  def __init__(self, stdout, stderr=""):
-    self.stdout, self.stderr = stdout, stderr
-
-calls = []
-original_run = eval_mod.subprocess.run
+EVENTS = ([{"choices": [{"delta": {"reasoning_content": "hmm"}}]}] * 4
+          + [{"choices": [{"delta": {"content": "1\n2\n"}}]}] * 2
+          + [{"choices": [], "usage": {"completion_tokens": 600}}])
+clock = iter(float(t) for t in range(100))
+original_urlopen, original_clock = speed.urllib.request.urlopen, speed.time.perf_counter
 try:
-  eval_mod.subprocess.run = lambda args, **kw: (calls.append((args, kw)), _Done(
-    '{"type":"step_start"}\n{"type":"text","part":{"type":"text","text":"B"}}\nnot json\n'))[1]
-  verdict = eval_mod.grade("the prompt")
-  args, kwargs = calls[0]
-  check("the verdict is the text part", "B", verdict)
-  check("the grader runs read-only", True, args[args.index("--agent") + 1] == "plan")
-  check("without plugins", True, "--pure" in args)
-  check("with the grader model", "opencode/big-pickle", args[args.index("-m") + 1])
-  check("in a scratch directory, not the plugin's", True, "ogw-grade-" in kwargs["cwd"])
-  eval_mod.subprocess.run = lambda args, **kw: _Done("", "Error: daily limit reached")
-  try:
-    eval_mod.grade("x")
-    check("no verdict is an error", True, False)
-  except RuntimeError as error:
-    check("no verdict is an error that says why", True, "daily limit reached" in str(error))
+  speed.urllib.request.urlopen = lambda request, timeout=0: _Stream(EVENTS)
+  speed.time.perf_counter = lambda: next(clock)
+  sample = speed.sample_once("key", "space-bunny-free", 0)
 finally:
-  eval_mod.subprocess.run = original_run
+  speed.urllib.request.urlopen, speed.time.perf_counter = original_urlopen, original_clock
+check("the window starts at the first reasoning token", 5.0, sample["windowSeconds"])
+check("so 600 tokens over it are 120 tok/s, not 600", 120.0, sample["tps"])
+check("three samples per model", 3, speed.SAMPLES)
 
 
 print()

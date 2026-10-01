@@ -1,49 +1,47 @@
-"""The Omniscience eval runner.
+"""The SciCode benchmark runner.
 
-Ported from server/eval.ts, with two corrections:
+A run asks each free model for every scored SciCode step, runs the code it
+writes against SciCode's tests, and records the share that pass — the number
+Artificial Analysis publishes as SciCode for the paid models.
 
-  * Run state is persisted to `eval-state.json` instead of living in a module
-    global. The original kept it in memory, so a run that outlived a plugin
-    reload had nobody left to report it — it would keep spending 2,400 calls
-    with no progress anyone could see and no way to cancel it.
-  * `currentQuestion` counts every question graded across every model, not the
-    per-model index. The original compared a per-model counter against a global
-    total, so the readout walked 1/1200 … 600/1200 and then jumped back to
-    1/1200 for the next model.
+Run state is persisted to `eval-state.json` rather than held in memory, so a
+run that outlives a plugin reload can still be watched and cancelled. A run
+takes hours, so each model's finished steps are kept in
+`scicode-progress-<model>.json`: an interrupted run picks up where it stopped
+instead of starting over.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import signal
 import subprocess
-import sys
-import shutil
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from . import complete as complete_mod
-from . import omniscience, opencode, store
+from . import opencode, scicode, store
 
+# Problems in flight at once. A problem's steps run in order (each sees the
+# model's own code for the earlier ones), so problems are the unit of
+# parallelism.
 CONCURRENCY = 4
-ANSWER_MAX_TOKENS = 300
 
-# A free model cannot be trusted to grade itself, so grading is Big Pickle on
-# OpenCode Zen: free, but rate-limited per day, and Zen's free tier only
-# answers requests made from OpenCode itself — so grades go through the
-# `opencode` CLI rather than the HTTP API. Override with FFA_GRADER_MODEL
-# (an `opencode run -m` model id).
-GRADER_MODEL = os.environ.get("FFA_GRADER_MODEL", "opencode/big-pickle")
-GRADER_TIMEOUT = 180
+# Medium reasoning effort, for two reasons. The orchestrators on the chart are
+# AA's medium-effort entries, and your OpenCode workers run the free models at
+# medium. And without it the API's default thinks far longer: Space Bunny spent
+# all of 16,000 tokens reasoning on a one-step problem and wrote no code, where
+# at medium it answered in about a minute.
+EFFORT = "medium"
 
-# A run grades DEFAULT_QUESTIONS of the 600 public questions per free model,
-# which keeps it inside Big Pickle's daily allowance. `start 600` runs them all.
-DEFAULT_QUESTIONS = 100
+# Room for a reasoning model to think and still write the code.
+ANSWER_MAX_TOKENS = 32000
+ANSWER_TIMEOUT = 900
+
+RETRIES = 2
 
 IDLE_STATE: dict[str, Any] = {
   "running": False,
@@ -83,13 +81,13 @@ def read_state() -> dict[str, Any]:
   merged = {**IDLE_STATE, **state}
   if merged.get("running") and not _pid_alive(merged.get("pid")):
     # The runner died without writing a terminal state — a reboot, an OOM, or a
-    # kill. Reporting "running" forever would be a lie, and the panel's Run
-    # button would refuse to start anything.
+    # kill. Reporting "running" forever would be a lie, and the window's button
+    # would refuse to start anything.
     return {
       **merged,
       "running": False,
       "message": "Run interrupted",
-      "error": "The eval process is no longer running. Its last results were kept.",
+      "error": "The benchmark stopped before it finished. Run it again to continue where it left off.",
       "finishedAt": merged.get("finishedAt") or now_iso(),
     }
   return merged
@@ -116,50 +114,6 @@ class _Cancelled(RuntimeError):
   pass
 
 
-def sample_questions(questions: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
-  """An even stride through the set rather than its first N, so a short run
-  still covers every domain instead of just the first few."""
-  if not limit or limit >= len(questions):
-    return questions
-  step = len(questions) / limit
-  return [questions[int(index * step)] for index in range(limit)]
-
-
-def _opencode_bin() -> str:
-  # The panel's process may not have mise's shims on PATH.
-  return shutil.which("opencode") or str(Path.home() / ".local" / "share" / "mise" / "shims" / "opencode")
-
-
-def grade(prompt: str) -> str:
-  """One verdict from the grader, via `opencode run`.
-
-  Read-only agent, empty scratch directory, no plugins: the grader only has to
-  read the prompt, and nothing in a question should be able to make it touch
-  files or run commands.
-  """
-  with tempfile.TemporaryDirectory(prefix="ogw-grade-") as scratch:
-    result = subprocess.run(
-      [_opencode_bin(), "run", "--pure", "--agent", "plan", "--format", "json", "-m", GRADER_MODEL, prompt],
-      cwd=scratch, capture_output=True, text=True, timeout=GRADER_TIMEOUT, stdin=subprocess.DEVNULL,
-    )
-  text = []
-  for line in result.stdout.splitlines():
-    try:
-      event = json.loads(line)
-    except ValueError:
-      continue
-    part = event.get("part") if isinstance(event, dict) else None
-    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-      text.append(part["text"])
-  if not text:
-    detail = (result.stderr or result.stdout).strip().splitlines()
-    raise RuntimeError(f"{GRADER_MODEL} gave no verdict" + (f": {detail[-1][:160]}" if detail else ""))
-  return "".join(text)
-
-
-RETRIES = 2
-
-
 def _with_retries(call):
   """A slow or dropped request is common on free models; retry it before
   giving up, with a short pause between attempts."""
@@ -168,31 +122,15 @@ def _with_retries(call):
       raise _Cancelled("cancelled")
     try:
       return call()
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+    except (RuntimeError, OSError):
       if attempt == RETRIES:
         raise
-      time.sleep(2 * (attempt + 1))
+      time.sleep(5 * (attempt + 1))
   raise AssertionError("unreachable")
 
 
-def _run_question(api_key: str, model: str, item: dict[str, Any]) -> str | None:
-  """A grade, or None when the model never answered — that question is left
-  out of the score rather than failing the whole model. A grader that keeps
-  failing (Big Pickle's daily limit, say) still raises: nothing can be graded."""
-  try:
-    prediction = _with_retries(
-      lambda: complete_mod.complete(api_key, model, omniscience.answer_prompt(item), ANSWER_MAX_TOKENS))
-  except (RuntimeError, OSError):
-    return None
-  # An empty response is an explicit refusal in this benchmark, not a parse
-  # failure, so it never reaches the grader.
-  if not prediction.strip():
-    return "D"
-  return omniscience.parse_grade(_with_retries(lambda: grade(omniscience.grader_prompt(item, prediction))))
-
-
 def _chosen(free_models: list[dict[str, Any]], models: list[str] | None) -> list[dict[str, Any]]:
-  """The free models to grade: all of them, or the ones named."""
+  """The free models to benchmark: all of them, or the ones named."""
   if models:
     free_models = [model for model in free_models if model["id"] in models]
     if not free_models:
@@ -202,110 +140,179 @@ def _chosen(free_models: list[dict[str, Any]], models: list[str] | None) -> list
   return free_models
 
 
-def run(limit: int | None = None, models: list[str] | None = None) -> dict[str, Any]:
-  clear_cancel()
+# ------------------------------------------------------------------ progress
 
-  auth = store.opencode_key()
-  if not auth:
-    raise RuntimeError("No opencode API key found. Sign in to opencode, or set OPENCODE_API_KEY.")
-  api_key = auth[0]
+def _progress_name(model_id: str) -> str:
+  return f"scicode-progress-{model_id}"
 
-  free_models = _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
 
-  questions = sample_questions(omniscience.fetch_questions(), limit or DEFAULT_QUESTIONS)
-  run_id = "run-" + format(int(time.time()), "x")
-  total = len(questions) * len(free_models)
+def _load_progress(model_id: str) -> dict[str, dict[str, Any]]:
+  """Finished steps from an earlier, interrupted run of this model:
+  {step_number: {"status": pass|fail|timeout|skipped, "code": str|None}}."""
+  saved = store.read_data(_progress_name(model_id))
+  if (isinstance(saved, dict) and saved.get("dataset") == scicode.DATASET_REVISION
+      and isinstance(saved.get("steps"), dict)):
+    return saved["steps"]
+  return {}
 
-  state: dict[str, Any] = {
-    **IDLE_STATE,
-    "running": True,
-    "runId": run_id,
-    "progress": 0.0,
-    "currentQuestion": 0,
-    "totalQuestions": total,
-    "startedAt": now_iso(),
-    "message": f"Grading with {GRADER_MODEL.split('/')[-1]}",
-    "pid": os.getpid(),
+
+def _save_progress(model_id: str, steps: dict[str, dict[str, Any]]) -> None:
+  store.write_data(_progress_name(model_id), {"dataset": scicode.DATASET_REVISION, "steps": steps})
+
+
+def _clear_progress(model_id: str) -> None:
+  store.data_path(_progress_name(model_id)).unlink(missing_ok=True)
+
+
+# ----------------------------------------------------------------------- run
+
+def _run_problem(api_key: str, model_id: str, problem: dict[str, Any],
+                 done: dict[str, dict[str, Any]], record) -> None:
+  """Every step of one problem, in order.
+
+  A step whose request keeps failing is "skipped", and so is the rest of its
+  problem: the later steps would be asked to build on code that doesn't
+  exist, which would score the network, not the model. Skipped steps are left
+  out of the score and reported.
+  """
+  problem_id = problem["problem_id"]
+  previous: list[str | None] = []
+  broken = False
+  for number, step in enumerate(problem["sub_steps"], start=1):
+    if (problem_id, number) in scicode.GIVEN_STEPS:
+      previous.append(scicode.given_code(problem_id, number, problem))
+      continue
+    key = step["step_number"]
+    if key in done:
+      previous.append(done[key].get("code"))
+      continue
+    if broken:
+      record(key, "skipped", None)
+      previous.append(None)
+      continue
+
+    prompt, prefix = scicode.build_prompt(problem, number, previous)
+    try:
+      response = _with_retries(lambda: complete_mod.complete(
+        api_key, model_id, prompt, ANSWER_MAX_TOKENS, timeout=ANSWER_TIMEOUT, effort=EFFORT))
+    except (RuntimeError, OSError):
+      broken = True
+      record(key, "skipped", None)
+      previous.append(None)
+      continue
+
+    code = scicode.extract_python_script(response)
+    status = scicode.run_test(scicode.test_script(problem, number, f"{prefix}\n{code}"))
+    record(key, status, code)
+    previous.append(code)
+
+
+def score(steps: dict[str, dict[str, Any]]) -> dict[str, Any]:
+  passed = sum(1 for step in steps.values() if step["status"] == "pass")
+  skipped = sum(1 for step in steps.values() if step["status"] == "skipped")
+  attempted = len(steps) - skipped
+  return {
+    "score": (passed / attempted) if attempted else 0.0,
+    "passed": passed,
+    "attempted": attempted,
+    "skipped": skipped,
   }
+
+
+def run(models: list[str] | None = None) -> dict[str, Any]:
+  clear_cancel()
+  # Counters start from zero here, not from whatever the last run left: `run`
+  # can be called without `start` (tests, or the CLI's internal verb).
+  state = {**read_state(), "running": True, "pid": os.getpid(), "error": None,
+           "progress": 0.0, "currentQuestion": 0, "totalQuestions": None, "finishedAt": None}
   write_state(state)
 
-  done = 0
-
-  def bump() -> None:
-    nonlocal done, state
-    done += 1
-    state = {**state, "progress": done / total, "currentQuestion": done}
+  def say(message: str) -> None:
+    nonlocal state
+    state = {**state, "message": message}
     write_state(state)
 
   try:
+    auth = store.opencode_key()
+    if not auth:
+      raise RuntimeError("No opencode API key found. Sign in to opencode, or set OPENCODE_API_KEY.")
+    api_key = auth[0]
+    free_models = _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
+
+    scicode.ensure_env(say)
+    scicode.ensure_data(say)
+    problems = scicode.fetch_problems("test")
+    per_model = scicode.scored_step_count(problems)
+    total = per_model * len(free_models)
+
+    lock = Lock()
+    finished = 0
+
     for model_index, free in enumerate(free_models):
-      state = {**state, "message": f"Answering with {free['label']} ({model_index + 1}/{len(free_models)})"}
-      write_state(state)
+      done = _load_progress(free["id"])
+      finished += len(done)
+      state = {**state, "totalQuestions": total, "currentQuestion": finished, "progress": finished / total}
+      say(f"SciCode · {free['label']} ({model_index + 1}/{len(free_models)})")
 
-      # One worker thread per question, capped: each is two blocking HTTP calls,
-      # so this is I/O concurrency and threads are the right tool.
+      def record(key: str, status: str, code: str | None, model_id: str = free["id"],
+                 steps: dict[str, dict[str, Any]] = done) -> None:
+        nonlocal finished, state
+        with lock:
+          steps[key] = {"status": status, "code": code}
+          _save_progress(model_id, steps)
+          finished += 1
+          state = {**state, "currentQuestion": finished, "progress": finished / total}
+          write_state(state)
+
       with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        def graded(item: dict[str, Any], model_id: str = free["id"]) -> str | None:
-          verdict = _run_question(api_key, model_id, item)
-          bump()
-          return verdict
-        grades = list(pool.map(graded, questions))
+        futures = [pool.submit(_run_problem, api_key, free["id"], problem, done, record) for problem in problems]
+        for future in futures:
+          future.result()
 
-      graded_only = [verdict for verdict in grades if verdict is not None]
-      if not graded_only:
-        raise RuntimeError(f"{free['label']} answered none of the questions.")
-      scores = omniscience.score_grades(graded_only)
-      store.push_eval_history({
+      result = score(done)
+      if result["attempted"] == 0:
+        raise RuntimeError(f"{free['label']} answered none of the SciCode steps.")
+      store.push_scicode_history({
         "opencodeId": free["id"],
-        "index": round(scores["index"], 4),
-        "accuracy": round(scores["accuracy"], 4),
-        "hallucinationRate": round(scores["hallucinationRate"], 4),
-        "answered": scores["answered"],
-        "total": scores["total"],
-        "skipped": len(grades) - len(graded_only),
+        "score": round(result["score"], 4),
+        "passed": result["passed"],
+        "attempted": result["attempted"],
+        "skipped": result["skipped"],
+        "total": per_model,
+        "effort": EFFORT,
         "finishedAt": now_iso(),
       })
+      _clear_progress(free["id"])
 
-    write_state({
-      **state,
-      "running": False,
-      "progress": 1.0,
-      "currentQuestion": total,
-      "finishedAt": now_iso(),
-      "message": "Run complete",
-      "pid": None,
-    })
+    write_state({**state, "running": False, "progress": 1.0, "finishedAt": now_iso(),
+                 "message": "Run complete", "pid": None})
   except _Cancelled:
-    write_state({**state, "running": False, "message": "Cancelled", "error": "Run cancelled.",
+    write_state({**state, "running": False, "message": "Cancelled",
+                 "error": "Run cancelled. Run it again to continue where it left off.",
                  "finishedAt": now_iso(), "pid": None})
-  except Exception as error:  # noqa: BLE001 - reported in the panel, not raised
+  except Exception as error:  # noqa: BLE001 - reported in the window, not raised
     write_state({**state, "running": False, "message": "Run failed", "error": str(error),
                  "finishedAt": now_iso(), "pid": None})
 
   return read_state()
 
 
-def start(limit: int | None = None, models: list[str] | None = None) -> dict[str, Any]:
+def start(models: list[str] | None = None) -> dict[str, Any]:
   """Validate, then hand the run to a detached process.
 
-  A default run is 400 LLM calls over several minutes. It cannot be a child of the
-  panel's process: a shell reload, a panel close, or a plugin restart would kill
-  it mid-flight, and there is no progress to show.
+  A run is hours of LLM calls and test runs. It cannot be a child of the
+  window's process: a shell reload, a window close, or a plugin restart would
+  kill it mid-flight.
   """
   state = read_state()
   if state.get("running"):
-    raise RuntimeError("An eval run is already in progress.")
+    raise RuntimeError("A SciCode run is already in progress.")
 
-  auth = store.opencode_key()
-  if not auth:
+  if not store.opencode_key():
     raise RuntimeError("No opencode API key found. Sign in to opencode, or set OPENCODE_API_KEY.")
+  _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
 
-  free_models = _chosen(opencode.filter_free(opencode.fetch_go_models()), models)
-
-  questions = sample_questions(omniscience.fetch_questions(), limit or DEFAULT_QUESTIONS)
-  total = len(questions) * len(free_models)
   run_id = "run-" + format(int(time.time()), "x")
-
   clear_cancel()
   write_state({
     **IDLE_STATE,
@@ -313,7 +320,6 @@ def start(limit: int | None = None, models: list[str] | None = None) -> dict[str
     "runId": run_id,
     "progress": 0.0,
     "currentQuestion": 0,
-    "totalQuestions": total,
     "startedAt": now_iso(),
     "message": "Starting…",
   })
@@ -321,7 +327,7 @@ def start(limit: int | None = None, models: list[str] | None = None) -> dict[str
   plugin_root = Path(__file__).resolve().parent.parent.parent
   runner = plugin_root / "bin" / "opencode-go-watcher-free-for-all-eval"
   log_path = store.data_dir() / "eval.log"
-  args = [str(runner), "run"] + ([str(limit)] if limit else [])
+  args = [str(runner), "run"]
   for model_id in models or []:
     args += ["--model", model_id]
 
@@ -337,4 +343,4 @@ def start(limit: int | None = None, models: list[str] | None = None) -> dict[str
 
   state = read_state()
   write_state({**state, "pid": process.pid})
-  return {"runId": run_id, "totalQuestions": total, "pid": process.pid}
+  return {"runId": run_id, "pid": process.pid}
