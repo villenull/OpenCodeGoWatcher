@@ -26,10 +26,11 @@ if [[ -f $RECORD ]]; then
   removed=1
 fi
 
-# The scan cache, the stale-limits cache, and everything the free-model charts
-# accumulate: the snapshot, the speed probe, the SciCode results and run state,
-# and SciCode's test data and Python environment (~1.2 GB). All of it is
-# re-derivable, so it goes.
+# The scan cache, the stale-limits cache, and anything the free-model charts
+# left behind. The charts moved to the free-model-charts branch in 2.0, but an
+# install that ever ran them still holds their snapshot, speed probe, SciCode
+# results, and SciCode's test data and Python environment (~1.2 GB). All of it
+# is re-derivable, so it goes.
 if [[ -d $CHARTS_DIR ]]; then
   rm -rv "$CHARTS_DIR"
   removed=1
@@ -50,7 +51,8 @@ else
   echo "removed the watcher's record, charts data, and cache"
 fi
 
-# The one thing that is not ours to delete: your Artificial Analysis key.
+# The one thing that is not ours to delete: a settings file an older version
+# may have stored an Artificial Analysis key in.
 settings="$CONFIG_HOME/opencode-go-watcher/settings.json"
 if [[ -e $settings ]]; then
   echo
