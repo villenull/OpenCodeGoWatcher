@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Combine the old panel/service entries, preserving settings and backups."""
+import json
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+home = Path.home()
+config = home / ".config/omarchy/shell.json"
+plugin_id = "io.github.villenull.opencode-go-watcher"
+old_ids = {"villenull.agents", "omarchy.agents", plugin_id}
+original = config.read_text() if config.exists() else "{}"
+value = json.loads(original)
+layout = value.setdefault("bar", {}).setdefault("layout", {})
+# Keep the customized clone's settings ahead of stock/default entries.
+entries = [(section, i, entry) for section in ("left", "center", "right")
+           for i, entry in enumerate(layout.get(section, []))
+           if entry.get("id") in old_ids]
+preferred = next((item for item in entries if item[2]["id"] == "villenull.agents"),
+                 entries[0] if entries else ("right", len(layout.get("right", [])), {}))
+section, index, settings = preferred
+settings = {**settings, "id": plugin_id}
+# Account for other agent entries removed before the preferred position.
+index -= sum(1 for sec, i, _ in entries if sec == section and i < index)
+for name in ("left", "center", "right"):
+    layout[name] = [e for e in layout.get(name, []) if e.get("id") not in old_ids]
+layout[section].insert(index, settings)
+value["plugins"] = [e for e in value.get("plugins", []) if e.get("id") not in old_ids]
+value["disabledPlugins"] = [e for e in value.get("disabledPlugins", [])
+                            if e not in old_ids] + ["omarchy.agents"]
+serialized = json.dumps(value, indent=2) + "\n"
+clone = home / ".config/omarchy/plugins/villenull.agents"
+if json.loads(original) != value or clone.exists():
+    backup = Path(os.environ.get("XDG_STATE_HOME", str(home / ".local/state"))) / "my-agents-backups" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup.mkdir(parents=True)
+    (backup / "shell.json").write_text(original)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    temporary = config.with_suffix(".json.my-agents-tmp")
+    temporary.write_text(serialized)
+    temporary.replace(config)
+    if clone.exists():
+        shutil.move(str(clone), str(backup / "villenull.agents"))
+    print(f"My Agents bundled; previous configuration saved in {backup}")
+else:
+    print("My Agents already bundled")

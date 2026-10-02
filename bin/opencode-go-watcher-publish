@@ -23,7 +23,7 @@ SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
 # settings should not be republished behind the panel's back.
 if [[ -f $SHELL_CONFIG ]] && command -v jq >/dev/null 2>&1; then
   enabled=$(jq -r --arg id "$AGENT_ID" '
-    [ .bar.layout | ..[] | objects | select(.id? == "omarchy.agents") | .providers[$id].enabled? ]
+    [ .bar.layout | ..[] | objects | select(.id? == "omarchy.agents" or .id? == "villenull.agents" or .id? == "io.github.villenull.opencode-go-watcher") | .providers[$id].enabled? ]
     | map(select(. != null))
     | if length == 0 then true else (all(. != false)) end
   ' "$SHELL_CONFIG" 2>/dev/null || echo true)
