@@ -26,7 +26,7 @@ Update the existing plugin, then run the included migration:
 ```bash
 omarchy plugin update io.github.villenull.opencode-go-watcher
 ~/.config/omarchy/plugins/io.github.villenull.opencode-go-watcher/bin/my-agents-migrate
-omarchy-shell shell rescanPlugins
+omarchy restart shell
 ```
 
 The migration keeps your panel position and settings, combines the two enabled
@@ -53,6 +53,7 @@ truth.
 
 ```bash
 ./test/usage-test.sh
+python3 test/migration-test.py
 ```
 
 Collector internals and diagnostic commands are documented in
